@@ -2,13 +2,20 @@ use ggez::{Context, ContextBuilder, GameResult};
 use ggez::conf::{WindowSetup, WindowMode};
 use ggez::graphics::{Image, Color, DrawParam, draw, clear, present};
 use ggez::event::{run, EventHandler, KeyCode, KeyMods};
-use ggez::timer::delta;
 use ggez::input::keyboard::is_key_pressed;
+use ggez::timer::delta;
 use ggez::event::quit;
 use ggez::mint::Point2;
+
 use std::f32::consts::PI;
+
 use rand::{Rng, thread_rng};
 use rand::rngs::ThreadRng;
+
+use std::net::{TcpListener, TcpStream};
+use std::io::Write;
+use std::io::Read;
+
 
 struct GGEZ {
     background_image: Image,
@@ -18,6 +25,7 @@ struct GGEZ {
     player_grab_image: Image,
     grab_string_image: Image,
     grab_hand_image: Image,
+
     player_x: f32,
     player_target_x: f32,
     player_target_direction: i32,
@@ -26,9 +34,20 @@ struct GGEZ {
     player_grab_distance: f32,
     player_grab_target_radian: f32,
     player_grab_string_position: Point2<f32>,
-    opponent_x: f32,
     player_move_state: i32,
     player_grab_state: i32,
+
+    opponent_x: f32,
+    opponent_target_x: f32,
+    opponent_target_direction: i32,
+    opponent_grab_time: f32,
+    opponent_grab_max_time: f32,
+    opponent_grab_distance: f32,
+    opponent_grab_target_radian: f32,
+    opponent_grab_string_position: Point2<f32>,
+    opponent_move_state: i32,
+    opponent_grab_state: i32,
+
     player_speed: f32,
     target_speed: f32,
     grab_speed: f32,
@@ -227,35 +246,36 @@ fn main() {
         Err(err) => panic!("Failed to build context: {}", err)
     };
 
-    let background_image = match Image::new(&mut ctx, "/background.png") {
-        Ok(res) => res,
-        Err(err) => panic!("Failed to load image: {}", err)
-    };
-    let foreground_image = match Image::new(&mut ctx, "/foreground.png") {
-        Ok(res) => res,
-        Err(err) => panic!("Failed to load image: {}", err)
-    };
-    let player_image = match Image::new(&mut ctx, "/player.png") {
-        Ok(res) => res,
-        Err(err) => panic!("Failed to load image: {}", err)
-    };
-    let player_grab_image = match Image::new(&mut ctx, "/player_grab.png") {
-        Ok(res) => res,
-        Err(err) => panic!("Failed to load image: {}", err)
-    };
-    let grab_string_image = match Image::new(&mut ctx, "/grab_string.png") {
-        Ok(res) => res,
-        Err(err) => panic!("Failed to load image: {}", err)
-    };
-    let grab_hand_image = match Image::new(&mut ctx, "/grab_hand.png") {
-        Ok(res) => res,
-        Err(err) => panic!("Failed to load image: {}", err)
-    };
-    let target_image = match Image::new(&mut ctx, "/target.png") {
-        Ok(res) => res,
-        Err(err) => panic!("Failed to load image: {}", err)
-    };
+    let background_image = Image::new(&mut ctx, "/background.png").unwrap();
+    let foreground_image = Image::new(&mut ctx, "/foreground.png").unwrap();
+    let player_image = Image::new(&mut ctx, "/player.png").unwrap();
+    let player_grab_image = Image::new(&mut ctx, "/player_grab.png").unwrap();
+    let grab_string_image = Image::new(&mut ctx, "/grab_string.png").unwrap();
+    let grab_hand_image = Image::new(&mut ctx, "/grab_hand.png").unwrap();
+    let target_image = Image::new(&mut ctx, "/target.png").unwrap();
     let rng = thread_rng();
+
+    let tcp_stream = match TcpListener::bind("127.0.0.1:9999") {
+        Ok(res) => {
+            println!("== Server ==");
+            println!("TCP port 9999 listen...");
+            let mut incoming_streams = res.incoming();
+            let stream = incoming_streams.next().unwrap().unwrap();
+            let opponent_ip_address = stream.peer_addr().unwrap();
+            println!("Opponent connected: {}", opponent_ip_address);
+            stream.set_nonblocking(true).unwrap();
+            stream
+        },
+        Err(err) => {
+            println!("== Client ==");
+            println!("TCP port 9999 connect...");
+            let stream = TcpStream::connect("127.0.0.1:9999").unwrap();
+            let opponent_ip_address = stream.peer_addr().unwrap();
+            println!("Connected to opponent: {}", opponent_ip_address);
+            stream.set_nonblocking(true).unwrap();
+            stream
+        }
+    };
 
     run(ctx, event_loop, GGEZ {
         background_image: background_image,
@@ -265,7 +285,7 @@ fn main() {
         grab_string_image: grab_string_image,
         grab_hand_image: grab_hand_image,
         target_image: target_image,
-        player_speed: 300.0,
+
         player_x: 640.0,
         player_target_x: 980.0,
         player_target_direction: -1,
@@ -274,9 +294,21 @@ fn main() {
         player_grab_distance: 0.0,
         player_grab_target_radian: 0.0,
         player_grab_string_position: Point2 {x: 0.0, y: 0.0},
-        opponent_x: 640.0,
         player_move_state: 0,
         player_grab_state: 0,
+
+        opponent_x: 640.0,
+        opponent_target_x: 300.0,
+        opponent_target_direction: 1,
+        opponent_grab_time: 0.0,
+        opponent_grab_max_time: 0.0,
+        opponent_grab_distance: 0.0,
+        opponent_grab_target_radian: 0.0,
+        opponent_grab_string_position: Point2 {x: 0.0, y: 0.0},
+        opponent_move_state: 0,
+        opponent_grab_state: 0,
+
+        player_speed: 300.0,
         target_speed: 800.0,
         grab_speed: 800.0,
         rng: rng,
