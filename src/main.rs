@@ -7,6 +7,8 @@ use ggez::input::keyboard::is_key_pressed;
 use ggez::event::quit;
 use ggez::mint::Point2;
 use std::f32::consts::PI;
+use rand::{Rng, thread_rng};
+use rand::rngs::ThreadRng;
 
 struct GGEZ {
     background_image: Image,
@@ -26,10 +28,11 @@ struct GGEZ {
     player_grab_string_position: Point2<f32>,
     opponent_x: f32,
     player_move_state: i32,
-    player_grab_state: bool,
+    player_grab_state: i32,
     player_speed: f32,
     target_speed: f32,
     grab_speed: f32,
+    rng: ThreadRng,
 }
 
 impl EventHandler for GGEZ {
@@ -37,10 +40,22 @@ impl EventHandler for GGEZ {
         let delta = delta(ctx);
         let dt = delta.as_secs() as f32 + delta.subsec_nanos() as f32 * 1e-9;
 
-        if self.player_grab_state {
+        if self.player_grab_state == 1 {
             self.player_grab_time += dt;
             if self.player_grab_time >= self.player_grab_max_time {
-                self.player_grab_state = false;
+                if self.player_target_x - 50.0 <= self.opponent_x && self.opponent_x <= self.player_target_x + 150.0 {
+                    self.player_grab_state = -1;
+                }
+                else {
+                    self.player_grab_state = 0;
+                }
+            }
+        }
+        else if self.player_grab_state == -1 {
+            self.player_grab_time -= dt;
+            if self.player_grab_time <= 0.0 {
+                self.player_grab_state = 0;
+                self.opponent_x = self.rng.gen_range(300.0..980.0);
             }
         }
         else {
@@ -74,7 +89,13 @@ impl EventHandler for GGEZ {
         draw(ctx, &self.background_image, DrawParam::new())?;
         draw(ctx, &self.foreground_image, DrawParam::new())?;
 
-        if self.player_grab_state {
+        if self.player_grab_state == 1 {
+            let opponent_draw_params = DrawParam::new()
+                .dest(Point2 {x: self.opponent_x, y: 70.0})
+                .rotation(0.0)
+                .offset(Point2 {x: 0.5, y: 0.5 });
+            draw(ctx, &self.player_image, opponent_draw_params)?;
+
             let player_target_draw_params = DrawParam::new()
                 .dest(Point2 {x: self.player_x, y: 650.0})
                 .rotation(self.player_grab_target_radian)
@@ -103,7 +124,49 @@ impl EventHandler for GGEZ {
                 .offset(Point2 {x: 0.5, y: 0.0 });
             draw(ctx, &self.grab_hand_image, grab_hand_draw_params)?;
         }
+        else if self.player_grab_state == -1 {
+            let grab_straigt_radian = self.player_grab_target_radian + 270.0 * PI / 180.0;
+            let player_grab_hand_position = Point2 {x: self.player_grab_string_position.x - grab_straigt_radian.cos() * self.player_grab_time * self.grab_speed, y: self.player_grab_string_position.y - grab_straigt_radian.sin() * self.player_grab_time * self.grab_speed};
+            
+            let opponent_draw_params = DrawParam::new()
+                .dest(player_grab_hand_position)
+                .rotation(self.player_grab_target_radian + PI)
+                .offset(Point2 {x: 0.5, y: 0.5 });
+            draw(ctx, &self.player_image, opponent_draw_params)?;
+
+            let player_target_draw_params = DrawParam::new()
+                .dest(Point2 {x: self.player_x, y: 650.0})
+                .rotation(self.player_grab_target_radian)
+                .offset(Point2 {x: 0.5, y: 0.0 })
+                .color(Color::BLACK);
+            draw(ctx, &self.target_image, player_target_draw_params)?;
+
+            let player_draw_params = DrawParam::new()
+                .dest(Point2 {x: self.player_x, y: 650.0})
+                .rotation(self.player_grab_target_radian)
+                .offset(Point2 {x: 0.5, y: 0.5 });
+            draw(ctx, &self.player_grab_image, player_draw_params)?;
+
+            let grab_string_draw_params = DrawParam::new()
+                .dest(self.player_grab_string_position)
+                .rotation(self.player_grab_target_radian)
+                .offset(Point2 {x: 0.5, y: 0.0 })
+                .scale([1.0, self.player_grab_distance / self.grab_string_image.height() as f32 * self.player_grab_time / self.player_grab_max_time]);
+            draw(ctx, &self.grab_string_image, grab_string_draw_params)?;
+
+            let grab_hand_draw_params = DrawParam::new()
+                .dest(player_grab_hand_position)
+                .rotation(self.player_grab_target_radian)
+                .offset(Point2 {x: 0.5, y: 0.0 });
+            draw(ctx, &self.grab_hand_image, grab_hand_draw_params)?;
+        }
         else {
+            let opponent_draw_params = DrawParam::new()
+                .dest(Point2 {x: self.opponent_x, y: 70.0})
+                .rotation(0.0)
+                .offset(Point2 {x: 0.5, y: 0.5 });
+            draw(ctx, &self.player_image, opponent_draw_params)?;
+
             let player_target_radian = (580.0_f64).atan2((self.player_x - self.player_target_x) as f64) as f32 + PI / 2.0;
             let player_target_draw_params = DrawParam::new()
                 .dest(Point2 {x: self.player_x, y: 650.0})
@@ -118,13 +181,7 @@ impl EventHandler for GGEZ {
                 .offset(Point2 {x: 0.5, y: 0.5 });
             draw(ctx, &self.player_image, player_draw_params)?;
         }
-
-        let opponent_draw_params = DrawParam::new()
-            .dest(Point2 {x: self.opponent_x, y: 70.0})
-            .rotation(0.0)
-            .offset(Point2 {x: 0.5, y: 0.5 });
-        draw(ctx, &self.player_image, opponent_draw_params)?;
-
+        
         present(ctx)?;
         Ok(())
     }
@@ -134,7 +191,7 @@ impl EventHandler for GGEZ {
             quit(ctx);
         }
 
-        if keycode == KeyCode::Space && !self.player_grab_state {
+        if keycode == KeyCode::Space && self.player_grab_state == 0 {
             self.player_grab_target_radian = (580.0_f64).atan2((self.player_x - self.player_target_x) as f64) as f32 + PI / 2.0;
             
             let grab_string_radian = self.player_grab_target_radian + 130.0 * PI / 180.0;
@@ -146,7 +203,7 @@ impl EventHandler for GGEZ {
             self.player_grab_distance = (((self.player_target_x - self.player_grab_string_position.x as f32) * (self.player_target_x - self.player_grab_string_position.x as f32) + (120.0 - self.player_grab_string_position.y as f32) * (120.0 - self.player_grab_string_position.y as f32)) as f64).sqrt() as f32;
 
             self.player_grab_time = 0.0;
-            self.player_grab_state = true;
+            self.player_grab_state = 1;
         }
 
         self.player_move_state = 0;
@@ -198,6 +255,7 @@ fn main() {
         Ok(res) => res,
         Err(err) => panic!("Failed to load image: {}", err)
     };
+    let rng = thread_rng();
 
     run(ctx, event_loop, GGEZ {
         background_image: background_image,
@@ -218,8 +276,9 @@ fn main() {
         player_grab_string_position: Point2 {x: 0.0, y: 0.0},
         opponent_x: 640.0,
         player_move_state: 0,
-        player_grab_state: false,
+        player_grab_state: 0,
         target_speed: 800.0,
         grab_speed: 800.0,
+        rng: rng,
     });
 }
