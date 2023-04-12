@@ -142,7 +142,7 @@ impl EventHandler for GGEZ {
 
             self.player_grab_max_time = (650.0 + grab_string_radian.sin() * 80.0 - 170.0) / (grab_straigt_radian.sin() * self.grab_speed);
             
-            self.player_grab_distance = (((self.player_target_x - self.player_x) * (self.player_target_x - self.player_x) + 480.0 * 480.0) as f64).sqrt() as f32;
+            self.player_grab_distance = (((self.player_target_x - self.player_grab_string_position.x as f32) * (self.player_target_x - self.player_grab_string_position.x as f32) + (170.0 - self.player_grab_string_position.y as f32) * (170.0 - self.player_grab_string_position.y as f32)) as f64).sqrt() as f32;
 
             self.player_grab_time = 0.0;
             self.player_state = 2;
