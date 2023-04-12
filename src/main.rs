@@ -25,7 +25,8 @@ struct GGEZ {
     player_grab_target_radian: f32,
     player_grab_string_position: Point2<f32>,
     opponent_x: f32,
-    player_state: i32,
+    player_move_state: i32,
+    player_grab_state: bool,
     player_speed: f32,
     target_speed: f32,
     grab_speed: f32,
@@ -36,13 +37,19 @@ impl EventHandler for GGEZ {
         let delta = delta(ctx);
         let dt = delta.as_secs() as f32 + delta.subsec_nanos() as f32 * 1e-9;
 
-        if self.player_state == -1 { self.player_x -= dt * self.player_speed; }
-        if self.player_state == 1 { self.player_x += dt * self.player_speed; }
+        if self.player_grab_state {
+            self.player_grab_time += dt;
+            if self.player_grab_time >= self.player_grab_max_time {
+                self.player_grab_state = false;
+            }
+        }
+        else {
+            if self.player_move_state == -1 { self.player_x -= dt * self.player_speed; }
+            if self.player_move_state == 1 { self.player_x += dt * self.player_speed; }
 
-        if self.player_x < 300.0 { self.player_x = 300.0; }
-        if self.player_x > 980.0 { self.player_x = 980.0; }
+            if self.player_x < 300.0 { self.player_x = 300.0; }
+            if self.player_x > 980.0 { self.player_x = 980.0; }
 
-        if self.player_state != 2 {
             if self.player_target_direction == -1 {
                 self.player_target_x -= self.target_speed * dt;
                 if self.player_target_x < 200.0 {
@@ -58,12 +65,6 @@ impl EventHandler for GGEZ {
                 }
             }
         }
-        else {
-            self.player_grab_time += dt;
-            if self.player_grab_time >= self.player_grab_max_time {
-                self.player_state = 0;
-            }
-        }
 
         Ok(())
     }
@@ -73,7 +74,7 @@ impl EventHandler for GGEZ {
         draw(ctx, &self.background_image, DrawParam::new())?;
         draw(ctx, &self.foreground_image, DrawParam::new())?;
 
-        if self.player_state == 2 {
+        if self.player_grab_state {
             let player_target_draw_params = DrawParam::new()
                 .dest(Point2 {x: self.player_x, y: 650.0})
                 .rotation(self.player_grab_target_radian)
@@ -113,7 +114,7 @@ impl EventHandler for GGEZ {
 
             let player_draw_params = DrawParam::new()
                 .dest(Point2 {x: self.player_x, y: 650.0})
-                .rotation(if self.player_state == -1 { 135.0 * PI / 180.0 } else { if self.player_state == 1 { 225.0 * PI / 180.0 } else { 180.0 * PI / 180.0 }})
+                .rotation(if self.player_move_state == -1 { 135.0 * PI / 180.0 } else { if self.player_move_state == 1 { 225.0 * PI / 180.0 } else { 180.0 * PI / 180.0 }})
                 .offset(Point2 {x: 0.5, y: 0.5 });
             draw(ctx, &self.player_image, player_draw_params)?;
         }
@@ -133,34 +134,30 @@ impl EventHandler for GGEZ {
             quit(ctx);
         }
 
-        if keycode == KeyCode::Space && self.player_state != 2 {
+        if keycode == KeyCode::Space && !self.player_grab_state {
             self.player_grab_target_radian = (580.0_f64).atan2((self.player_x - self.player_target_x) as f64) as f32 + PI / 2.0;
             
             let grab_string_radian = self.player_grab_target_radian + 130.0 * PI / 180.0;
             let grab_straigt_radian = self.player_grab_target_radian + 270.0 * PI / 180.0;
             self.player_grab_string_position = Point2 {x: self.player_x + grab_string_radian.cos() * 80.0, y: 650.0 + grab_string_radian.sin() * 80.0};
 
-            self.player_grab_max_time = (650.0 + grab_string_radian.sin() * 80.0 - 170.0) / (grab_straigt_radian.sin() * self.grab_speed);
+            self.player_grab_max_time = (650.0 + grab_string_radian.sin() * 80.0 - 120.0) / (grab_straigt_radian.sin() * self.grab_speed);
             
-            self.player_grab_distance = (((self.player_target_x - self.player_grab_string_position.x as f32) * (self.player_target_x - self.player_grab_string_position.x as f32) + (170.0 - self.player_grab_string_position.y as f32) * (170.0 - self.player_grab_string_position.y as f32)) as f64).sqrt() as f32;
+            self.player_grab_distance = (((self.player_target_x - self.player_grab_string_position.x as f32) * (self.player_target_x - self.player_grab_string_position.x as f32) + (120.0 - self.player_grab_string_position.y as f32) * (120.0 - self.player_grab_string_position.y as f32)) as f64).sqrt() as f32;
 
             self.player_grab_time = 0.0;
-            self.player_state = 2;
+            self.player_grab_state = true;
         }
 
-        if self.player_state != 2 {
-            self.player_state = 0;
-            if is_key_pressed(ctx, KeyCode::Left) { self.player_state = -1 }
-            if is_key_pressed(ctx, KeyCode::Right) { self.player_state = 1 }
-        }
+        self.player_move_state = 0;
+        if is_key_pressed(ctx, KeyCode::Left) { self.player_move_state = -1 }
+        if is_key_pressed(ctx, KeyCode::Right) { self.player_move_state = 1 }
     }
 
     fn key_up_event(&mut self, ctx: &mut Context, keycode: KeyCode, keymod: KeyMods) {
-        if self.player_state != 2 {
-            self.player_state = 0;
-            if is_key_pressed(ctx, KeyCode::Left) { self.player_state = -1 }
-            if is_key_pressed(ctx, KeyCode::Right) { self.player_state = 1 }
-        }
+        self.player_move_state = 0;
+        if is_key_pressed(ctx, KeyCode::Left) { self.player_move_state = -1 }
+        if is_key_pressed(ctx, KeyCode::Right) { self.player_move_state = 1 }
     }
 }
 
@@ -220,8 +217,9 @@ fn main() {
         player_grab_target_radian: 0.0,
         player_grab_string_position: Point2 {x: 0.0, y: 0.0},
         opponent_x: 640.0,
-        player_state: 0,
+        player_move_state: 0,
+        player_grab_state: false,
         target_speed: 800.0,
-        grab_speed: 600.0,
+        grab_speed: 800.0,
     });
 }
