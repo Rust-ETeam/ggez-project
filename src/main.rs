@@ -114,6 +114,11 @@ impl GGEZ {
                         self.opponent_grab_target_radian = grab_target_radian;
                         self.opponent_grab_string_position = Point2 {x: grab_string_position_x, y: grab_string_position_y};
                         self.opponent_grab_state = grab_state;
+
+                        if self.opponent_grab_time > 0.0 {
+                            self.player_x = self.rng.gen_range(300.0..980.0);
+                            self.send_player_data();
+                        }
                     }
                 }
                 else if self.opponent_grab_state == 0 {
