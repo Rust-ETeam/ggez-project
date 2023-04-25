@@ -404,8 +404,13 @@ impl EventHandler for Target {
             let mut gameobject = self.rc_gameobject.borrow_mut();
             if let Some(rc_parent) = gameobject.rc_parent.clone() {
                 let parent = rc_parent.borrow();
-                let dist_x = self.look_at_x - parent.transform.position.x;
+                let dist_x = if parent.transform.position.y < 0.0 {
+                    parent.transform.position.x - self.look_at_x
+                } else {
+                    self.look_at_x - parent.transform.position.x
+                };
                 gameobject.transform.rotation = dist_x.atan2(580.0_f32);
+                println!("{:?} {}", parent.transform.position, self.look_at_x);
             }
             gameobject.update_global_transform();
         }
