@@ -83,6 +83,15 @@ impl Transform {
     fn magnitude(&self) -> f32 {
         (self.position.x.powf(2.0) + self.position.y.powf(2.0)).sqrt()
     }
+
+    fn rotate_point(point: Point2<f32>, rotation: f32) -> Point2<f32> {
+        let magnitude = (point.x.powf(2.0) + point.y.powf(2.0)).sqrt();
+        let radian = point.y.atan2(point.y) + rotation;
+        Point2 {
+            x: magnitude * radian.cos(),
+            y: magnitude * radian.sin(),
+        }
+    }
 }
 
 struct GameObject {
@@ -185,15 +194,21 @@ impl EventHandler for Grab {
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
         if self.state != 0.0 {
             let gameobject = self.rc_gameobject.borrow();
+
+            let scale_y = gameobject.transform.position.x / (self.string_image.as_ref().height() as f32);
+
+            let string_draw_param = DrawParam::new()
+                .dest(gameobject.global_transform.position)
+                .rotation(gameobject.global_transform.rotation - PI / 2.0)
+                .offset(Point2 { x: 0.5, y: 1.0 })
+                .scale(Point2 { x: 1.0, y: scale_y });
+            draw(ctx, self.string_image.as_ref(), string_draw_param)?;
+
             let hand_draw_param = DrawParam::new()
                 .dest(gameobject.global_transform.position)
                 .rotation(gameobject.global_transform.rotation - PI / 2.0)
                 .offset(Point2 { x: 0.5, y: 0.5 });
             draw(ctx, self.hand_image.as_ref(), hand_draw_param)?;
-            println!(
-                "{:?} {:?}",
-                gameobject.transform.position, gameobject.global_transform.position
-            );
         }
         Ok(())
     }
@@ -378,8 +393,12 @@ impl EventHandler for Character {
         // if keycode == KeyCode::Space && self.player_grab_state == 0 {
         if keycode == KeyCode::Space {
             self.grab.state = 1.0;
+
+            self.grab.set_position(Transform::rotate_point(
+                Point2 { x: 35.0, y: 60.0 },
+                self.target.get_rotation(),
+            ));
             self.grab.set_rotation(self.target.get_rotation());
-            self.grab.set_position(Point2{x:50.0, y: 70.0});
         }
 
         self.move_state = 0.0;
