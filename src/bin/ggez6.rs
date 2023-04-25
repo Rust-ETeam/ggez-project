@@ -178,7 +178,7 @@ impl GameObject {
 impl Communication for GameObject {
     fn get_send_data(&self) -> Vec<u8> {
         let mut data = vec![];
-        
+
         let px = self.transform.position.x.to_ne_bytes();
         let py = self.transform.position.y.to_ne_bytes();
         let r = self.transform.rotation.to_ne_bytes();
@@ -369,6 +369,21 @@ impl Target {
     }
 }
 
+impl Communication for Target {
+    fn get_send_data(&self) -> Vec<u8> {
+        let mut data = vec![];
+        let la = self.look_at_x.to_ne_bytes();
+
+        data.extend_from_slice(&la);
+        data
+    }
+
+    fn set_recv_data(&mut self, buf: &mut Vec<u8>) {
+        let (data, buf) = buf.split_at(4);
+        self.look_at_x = f32::from_ne_bytes(data[0..4].try_into().unwrap());
+    }
+}
+
 impl EventHandler for Target {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
         let delta = ggez::timer::delta(ctx);
@@ -512,32 +527,33 @@ impl Character {
 impl Communication for Character {
     fn get_send_data(&self) -> Vec<u8> {
         let mut data = vec![];
-        if self.is_opponent {
-            let ig = if self.is_grabbed_by { [1u8] } else { [0u8] };
-            data.extend_from_slice(&ig);
-        } else {
-            let ms = self.move_state.to_ne_bytes();
-            let go = self.rc_gameobject.borrow().get_send_data();
+        let ms = self.move_state.to_ne_bytes();
+        let go = self.rc_gameobject.borrow().get_send_data();
 
-            data.extend_from_slice(&ms);
-            data.extend(go);
-        }
+        data.extend_from_slice(&ms);
+        data.extend(go);
+
+        data.extend(self.target.get_send_data());
+        data.extend(self.grab.get_send_data());
+
         data
     }
 
     fn set_recv_data(&mut self, buf: &mut Vec<u8>) {
-        if self.is_opponent {
-            let (data, buf) = buf.split_at(4);
-            self.move_state = f32::from_ne_bytes(data[0..4].try_into().unwrap());
+        let (data, buf) = buf.split_at(4);
+        self.move_state = f32::from_ne_bytes(data[0..4].try_into().unwrap());
 
-            let mut buf = Vec::from(buf);
-            self.rc_gameobject.borrow_mut().set_recv_data(&mut buf);
-        } else {
-            let (data, buf) = buf.split_at(1);
+        let (data, buf) = buf.split_at(20);
+        let mut data = Vec::from(data);
+        self.rc_gameobject.borrow_mut().set_recv_data(&mut data);
 
-            let ig = u8::from_ne_bytes(data[0..1].try_into().unwrap());
-            self.is_grabbed_by = if ig == 1u8 { true } else { false };
-        }
+        let (data, buf) = buf.split_at(4);
+        let mut data = Vec::from(data);
+        self.target.set_recv_data(&mut data);
+
+        let (data, buf) = buf.split_at(28);
+        let mut data = Vec::from(data);
+        self.grab.set_recv_data(&mut data);
     }
 }
 
@@ -697,21 +713,17 @@ impl GGEZ {
 
     fn send_data(&mut self) {
         let mut data = self.rc_player.borrow_mut().get_send_data(); // 24 bytes
-        data.extend(self.rc_opponent.borrow_mut().get_send_data()); // 1 byte
         self.stream.write(data.as_slice()).unwrap();
         self.stream.flush().unwrap();
     }
 
     fn recv_data(&mut self) {
-        let mut buf = [0u8; 25];
+        let mut buf = [0u8; 56];
         match self.stream.read_exact(&mut buf) {
             Ok(_) => {
                 self.rc_opponent
                     .borrow_mut()
-                    .set_recv_data(&mut Vec::from(&buf[0..24]));
-                self.rc_player
-                    .borrow_mut()
-                    .set_recv_data(&mut Vec::from(&buf[24..25]));
+                    .set_recv_data(&mut Vec::from(buf));
             }
             Err(err) => {}
         }
