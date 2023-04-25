@@ -51,15 +51,15 @@ impl Transform {
 
     fn right(&self) -> Point2<f32> {
         Point2 {
-            x: (self.rotation - PI / 2.0).cos(),
-            y: (self.rotation - PI / 2.0).sin(),
+            x: (self.rotation + PI / 2.0).cos(),
+            y: (self.rotation + PI / 2.0).sin(),
         }
     }
 
     fn left(&self) -> Point2<f32> {
         Point2 {
-            x: (self.rotation + PI / 2.0).cos(),
-            y: (self.rotation + PI / 2.0).sin(),
+            x: (self.rotation - PI / 2.0).cos(),
+            y: (self.rotation - PI / 2.0).sin(),
         }
     }
 
@@ -78,6 +78,10 @@ impl Transform {
 
     fn move_offset_y(&mut self, offset_y: f32) {
         self.position.y += offset_y;
+    }
+
+    fn magnitude(&self) -> f32 {
+        (self.position.x.powf(2.0) + self.position.y.powf(2.0)).sqrt()
     }
 }
 
@@ -111,14 +115,13 @@ impl GameObject {
             self.global_transform.scale.y =
                 self.transform.scale.y * parent.global_transform.scale.y;
 
+            let scaled_pos_x = self.transform.position.x * self.global_transform.scale.x;
+            let scaled_pos_y = self.transform.position.y * self.global_transform.scale.y;
+            let magnitude = (scaled_pos_x.powf(2.0) + scaled_pos_y.powf(2.0)).sqrt();
             self.global_transform.position.x = parent.global_transform.position.x
-                + self.global_transform.rotation.cos()
-                    * self.global_transform.scale.x
-                    * self.transform.position.x;
+                + self.global_transform.rotation.cos() * magnitude;
             self.global_transform.position.y = parent.global_transform.position.y
-                + self.global_transform.rotation.cos()
-                    * self.global_transform.scale.y
-                    * self.transform.position.y;
+                + self.global_transform.rotation.sin() * magnitude;
         } else {
             self.global_transform = self.transform;
         }
@@ -129,7 +132,7 @@ struct Grab {
     hand_image: Rc<Image>,
     string_image: Rc<Image>,
     rc_gameobject: Rc<RefCell<GameObject>>,
-    y_threshold: f32,
+    threshold: f32,
     speed: f32,
     state: f32,
 }
@@ -140,10 +143,14 @@ impl Grab {
             hand_image: load_image(ctx, String::from("/grab_hand.png"), image_pool),
             string_image: load_image(ctx, String::from("/grab_string.png"), image_pool),
             rc_gameobject: Rc::new(RefCell::new(GameObject::new())),
-            y_threshold: 580.0,
+            threshold: 580.0,
             speed: 800.0,
             state: 0.0,
         }
+    }
+
+    fn set_rotation(&mut self, rotation: f32) {
+        self.rc_gameobject.borrow_mut().transform.rotation = rotation;
     }
 }
 
@@ -151,11 +158,39 @@ impl EventHandler for Grab {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
         let delta = delta(&ctx);
         let dt = delta.as_secs() as f32 + delta.subsec_nanos() as f32 * 1e-9;
+        let speed = dt * self.speed * self.state;
+        {
+            let mut gameobject = self.rc_gameobject.borrow_mut();
+            let delta_vec = gameobject.transform.forward();
+            gameobject.transform.position.x += speed * delta_vec.x;
+            gameobject.transform.position.y += speed * delta_vec.y;
+            // println!("{:?}", gameobject.transform.position);
+
+            if gameobject.transform.position.x > self.threshold {
+                // Check Oppoenent
+                gameobject.transform.position = Point2 { x: 0.0, y: 0.0 };
+                self.state = 0.0;
+            }
+
+            gameobject.update_global_transform();
+        }
 
         Ok(())
     }
 
-    fn draw(&mut self, _ctx: &mut Context) -> GameResult<()> {
+    fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
+        if self.state != 0.0 {
+            let gameobject = self.rc_gameobject.borrow();
+            let hand_draw_param = DrawParam::new()
+                .dest(gameobject.global_transform.position)
+                .rotation(gameobject.global_transform.rotation - PI / 2.0)
+                .offset(Point2 { x: 0.5, y: 0.5 });
+            draw(ctx, self.hand_image.as_ref(), hand_draw_param)?;
+            println!(
+                "{:?} {:?}",
+                gameobject.global_transform.position, gameobject.global_transform.rotation
+            );
+        }
         Ok(())
     }
 }
@@ -179,9 +214,12 @@ impl Target {
         }
     }
 
-    fn get_target_rotation(&self) -> f32 {
-        let gameobject = self.rc_gameobject.borrow();
-        gameobject.transform.rotation
+    fn get_rotation(&self) -> f32 {
+        self.rc_gameobject.borrow().transform.rotation
+    }
+
+    fn set_rotation(&mut self, rotation: f32) {
+        self.rc_gameobject.borrow_mut().transform.rotation = rotation;
     }
 }
 
@@ -219,9 +257,14 @@ impl EventHandler for Target {
             let gameobject = self.rc_gameobject.borrow();
             let draw_param = DrawParam::new()
                 .dest(gameobject.global_transform.position)
-                .rotation(gameobject.global_transform.rotation + PI / 2.0)
+                .rotation(gameobject.global_transform.rotation - PI / 2.0)
                 .offset(Point2 { x: 0.5, y: 0.0 })
-                .color(Color::CYAN);
+                .color(if self.speed > 0.0 {
+                    Color::CYAN
+                } else {
+                    Color::BLACK
+                });
+            println!("{:?}", gameobject.global_transform.rotation);
             draw(ctx, self.image.as_ref(), draw_param)?;
         }
         Ok(())
@@ -271,45 +314,52 @@ impl Character {
             grab,
         }
     }
+
+    fn set_rotation(&mut self, rotation: f32) {
+        self.rc_gameobject.borrow_mut().transform.rotation = rotation;
+    }
 }
 
 impl EventHandler for Character {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
         let delta = ggez::timer::delta(ctx);
         let dt = delta.as_secs() as f32 + delta.subsec_nanos() as f32 * 1e-9;
-        let speed = dt * self.move_state * self.move_speed;
+        let speed = dt * self.move_state * self.move_speed * (1.0 - self.grab.state.abs());
+        self.target.speed = 800.0 * (1.0 - self.grab.state.abs());
         {
             let mut gameobject = self.rc_gameobject.borrow_mut();
-            let mut delta_vec = gameobject.transform.right();
+            let delta_vec = gameobject.transform.right();
             gameobject.transform.position.x += speed * delta_vec.x;
             gameobject.transform.position.x = gameobject.transform.position.x.min(980.0).max(300.0);
             gameobject.update_global_transform();
         }
+
         self.target.update(ctx)?;
+        self.grab.update(ctx)?;
         Ok(())
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
         self.target.draw(ctx)?;
+        self.grab.draw(ctx)?;
         {
             let gameobject = self.rc_gameobject.borrow();
             let (draw_image, rotation) = if self.grab.state == 0.0 {
                 (
                     self.default_image.clone(),
-                    gameobject.global_transform.rotation + (2.0 + self.move_state) * PI / 4.0,
+                    gameobject.global_transform.rotation - (2.0 - self.move_state) * PI / 4.0,
                 )
             } else {
                 let target = self.target.rc_gameobject.borrow();
                 (
                     self.motion_image.clone(),
-                    target.global_transform.rotation + PI / 2.0,
+                    target.global_transform.rotation - PI / 2.0,
                 )
             };
-            let mut draw_param = DrawParam::new()
+            let draw_param = DrawParam::new()
                 .dest(gameobject.global_transform.position)
                 .rotation(rotation)
                 .offset(Point2 { x: 0.5, y: 0.5 });
-            // draw(ctx, self.default_image.as_ref(), draw_param)?;
             draw(ctx, draw_image.as_ref(), draw_param)?;
         }
         Ok(())
@@ -325,7 +375,7 @@ impl EventHandler for Character {
         // if keycode == KeyCode::Space && self.player_grab_state == 0 {
         if keycode == KeyCode::Space {
             self.grab.state = 1.0;
-            self.target.direction = 0.0;
+            self.grab.set_rotation(self.target.get_rotation());
         }
 
         self.move_state = 0.0;
@@ -365,7 +415,7 @@ impl GGEZ {
         {
             let mut gameobject = player.rc_gameobject.borrow_mut();
             gameobject.transform.position = Point2 { x: 640.0, y: 650.0 };
-            gameobject.transform.rotation = PI / 2.0;
+            gameobject.transform.rotation = -PI / 2.0;
         }
 
         let mut opponent = Character::new(ctx, image_pool);
@@ -373,7 +423,7 @@ impl GGEZ {
         {
             let mut gameobject = opponent.rc_gameobject.borrow_mut();
             gameobject.transform.position = Point2 { x: 640.0, y: 70.0 };
-            gameobject.transform.rotation = -PI / 2.0;
+            gameobject.transform.rotation = PI / 2.0;
         }
 
         GGEZ {
