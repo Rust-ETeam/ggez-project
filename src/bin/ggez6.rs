@@ -658,6 +658,7 @@ struct GGEZ {
     rc_opponent: Rc<RefCell<Character>>,
     rc_global: Rc<RefCell<GameObject>>,
     stream: TcpStream,
+    is_game_end: bool,
 }
 
 impl GGEZ {
@@ -708,6 +709,7 @@ impl GGEZ {
             rc_opponent,
             rc_global,
             stream,
+            is_game_end: false,
         }
     }
 
@@ -737,6 +739,9 @@ impl EventHandler for GGEZ {
 
         self.rc_player.borrow_mut().update(ctx)?;
         self.rc_opponent.borrow_mut().update(ctx)?;
+
+        self.is_game_end =
+            self.rc_player.borrow().score == 3 || self.rc_opponent.borrow().score == 3;
         Ok(())
     }
 
@@ -744,6 +749,46 @@ impl EventHandler for GGEZ {
         clear(ctx, Color::WHITE);
         draw(ctx, self.background_image.as_ref(), DrawParam::new())?;
         draw(ctx, self.foreground_image.as_ref(), DrawParam::new())?;
+
+        // Draw Score
+        let opponent_score_draw_params = DrawParam::new()
+            .dest(Point2 { x: 640.0, y: 220.0 })
+            .offset(Point2 { x: 0.5, y: 0.5 })
+            .scale([2.0, 2.0])
+            .color(Color::WHITE);
+        draw(
+            ctx,
+            &Text::new(format!("{}", self.rc_opponent.borrow().score)),
+            opponent_score_draw_params,
+        )?;
+
+        let player_score_draw_params = DrawParam::new()
+            .dest(Point2 { x: 640.0, y: 450.0 })
+            .offset(Point2 { x: 0.5, y: 0.5 })
+            .scale([3.0, 3.0])
+            .color(Color::WHITE);
+        draw(
+            ctx,
+            &Text::new(format!("{}", self.rc_player.borrow().score)),
+            player_score_draw_params,
+        )?;
+
+        if self.is_game_end {
+            let game_end_draw_params = DrawParam::new()
+                .dest(Point2 { x: 640.0, y: 260.0 })
+                .offset(Point2 { x: 0.5, y: 0.5 })
+                .scale([5.0, 5.0])
+                .color(Color::WHITE);
+            if self.rc_player.borrow().score == 3 {
+                draw(ctx, &Text::new("You Win!\nPress ESC"), game_end_draw_params)?;
+            } else {
+                draw(
+                    ctx,
+                    &Text::new("Opponent Win!\nPress ESC"),
+                    game_end_draw_params,
+                )?;
+            }
+        }
 
         self.rc_player.borrow_mut().draw(ctx)?;
         self.rc_opponent.borrow_mut().draw(ctx)?;
