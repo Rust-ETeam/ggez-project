@@ -196,10 +196,11 @@ impl EventHandler for Grab {
                     // Check target is in grab range (50.0)
                     if (target.get_global_position().x - gameobject.global_transform.position.x)
                         .abs()
-                        < 50.0
+                        < 75.0
                     {
                         self.state = -1.0;
                         self.check_grab_once = true;
+                        target.set_global_rotation(gameobject.global_transform.rotation - PI);
                         target.is_grabbed_by = true;
                     } else {
                         self.state = 0.0;
@@ -372,9 +373,18 @@ impl Character {
             gameobject.transform.position = Point2 {
                 x: rng.gen_range(300.0..980.0),
                 y: if self.is_opponent { 70.0 } else { 650.0 },
-            }
+            };
+            gameobject.transform.rotation = if self.is_opponent {
+                PI / 2.0
+            } else {
+                -PI / 2.0
+            };
         }
         self.is_grabbed_by = false;
+    }
+
+    fn set_global_rotation(&self, rotation: f32) {
+        self.rc_gameobject.borrow_mut().global_transform.rotation = rotation;
     }
 
     fn set_global_position(&self, position: Point2<f32>) {
