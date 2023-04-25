@@ -19,6 +19,11 @@ use std::io::Read;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 
+pub trait Communication {
+    fn get_send_data(&self) -> Vec<u8>;
+    fn set_recv_data(&mut self, buf: &mut Vec<u8>);
+}
+
 #[derive(Clone, Copy, PartialEq)]
 struct Transform {
     position: Point2<f32>,
@@ -86,7 +91,7 @@ impl Transform {
 
     fn rotate_point(point: Point2<f32>, rotation: f32) -> Point2<f32> {
         let magnitude = (point.x.powf(2.0) + point.y.powf(2.0)).sqrt();
-        let radian = point.y.atan2(point.y) + rotation;
+        let radian = point.y.atan2(point.x) + rotation;
         Point2 {
             x: magnitude * radian.cos(),
             y: magnitude * radian.sin(),
@@ -126,15 +131,81 @@ impl GameObject {
 
             let scaled_pos_x = self.transform.position.x * self.global_transform.scale.x;
             let scaled_pos_y = self.transform.position.y * self.global_transform.scale.y;
-            let magnitude = (scaled_pos_x.powf(2.0) + scaled_pos_y.powf(2.0)).sqrt();
-            let radian = scaled_pos_y.atan2(scaled_pos_x);
-            self.global_transform.position.x = parent.global_transform.position.x
-                + (parent.global_transform.rotation + radian).cos() * magnitude;
-            self.global_transform.position.y = parent.global_transform.position.y
-                + (parent.global_transform.rotation + radian).sin() * magnitude;
+            let relative_position = Transform::rotate_point(
+                Point2 {
+                    x: scaled_pos_x,
+                    y: scaled_pos_y,
+                },
+                parent.global_transform.rotation,
+            );
+            self.global_transform.position.x =
+                parent.global_transform.position.x + relative_position.x;
+            self.global_transform.position.y =
+                parent.global_transform.position.y + relative_position.y;
         } else {
             self.global_transform = self.transform;
         }
+    }
+
+    fn update_local_transform(&mut self) {
+        if let Some(rc_parent) = self.rc_parent.clone() {
+            let parent = rc_parent.borrow();
+            self.transform.rotation =
+                self.global_transform.rotation - parent.global_transform.rotation;
+
+            self.transform.scale.x =
+                self.global_transform.scale.x / parent.global_transform.scale.x;
+            self.global_transform.scale.y =
+                self.global_transform.scale.y / parent.global_transform.scale.y;
+
+            let relative_x = self.global_transform.position.x - parent.global_transform.position.x;
+            let relative_y = self.global_transform.position.y - parent.global_transform.position.y;
+            let local_scaled_position = Transform::rotate_point(
+                Point2 {
+                    x: relative_x,
+                    y: relative_y,
+                },
+                -parent.global_transform.rotation,
+            );
+            self.transform.position.x = local_scaled_position.x / self.transform.scale.x;
+            self.transform.position.y = local_scaled_position.y / self.transform.scale.y;
+        } else {
+            self.transform = self.global_transform;
+        }
+    }
+}
+
+impl Communication for GameObject {
+    fn get_send_data(&self) -> Vec<u8> {
+        let mut data = vec![];
+        
+        let px = self.transform.position.x.to_ne_bytes();
+        let py = self.transform.position.y.to_ne_bytes();
+        let r = self.transform.rotation.to_ne_bytes();
+        let sx = self.transform.scale.x.to_ne_bytes();
+        let sy = self.transform.scale.y.to_ne_bytes();
+
+        data.extend_from_slice(&px);
+        data.extend_from_slice(&py);
+        data.extend_from_slice(&r);
+        data.extend_from_slice(&sx);
+        data.extend_from_slice(&sy);
+        data
+    }
+
+    fn set_recv_data(&mut self, buf: &mut Vec<u8>) {
+        let data = buf.as_slice();
+        let px = f32::from_ne_bytes(data[0..4].try_into().unwrap());
+        let py = f32::from_ne_bytes(data[4..8].try_into().unwrap());
+        let r = f32::from_ne_bytes(data[8..12].try_into().unwrap());
+        let sx = f32::from_ne_bytes(data[12..16].try_into().unwrap());
+        let sy = f32::from_ne_bytes(data[16..20].try_into().unwrap());
+        self.transform.position.x = px;
+        self.transform.position.y = py;
+        self.transform.rotation = r;
+        self.transform.scale.x = sx;
+        self.transform.scale.y = sy;
+        self.update_global_transform();
     }
 }
 
@@ -177,6 +248,31 @@ impl Grab {
     }
 }
 
+impl Communication for Grab {
+    fn get_send_data(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        let sp = self.speed.to_ne_bytes();
+        let st = self.state.to_ne_bytes();
+        let go = self.rc_gameobject.borrow().get_send_data();
+
+        data.extend_from_slice(&sp);
+        data.extend_from_slice(&st);
+        data.extend(go);
+        data
+    }
+
+    fn set_recv_data(&mut self, buf: &mut Vec<u8>) {
+        let (data, buf) = buf.split_at(8);
+        let sp = f32::from_ne_bytes(data[0..4].try_into().unwrap());
+        let st = f32::from_ne_bytes(data[4..8].try_into().unwrap());
+        self.speed = sp;
+        self.state = st;
+
+        let mut buf = Vec::from(buf);
+        self.rc_gameobject.borrow_mut().set_recv_data(&mut buf);
+    }
+}
+
 impl EventHandler for Grab {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
         let delta = delta(&ctx);
@@ -193,13 +289,12 @@ impl EventHandler for Grab {
             if self.state == 1.0 && gameobject.transform.position.x > self.threshold {
                 self.rc_target.as_ref().map(|rc_target| {
                     let mut target = rc_target.borrow_mut();
-                    // Check target is in grab range (50.0)
+                    // Check target is in grab range (75.0)
                     if (target.get_global_position().x - gameobject.global_transform.position.x)
                         .abs()
                         < 75.0
                     {
                         self.state = -1.0;
-                        self.check_grab_once = true;
                         target.set_global_rotation(gameobject.global_transform.rotation - PI);
                         target.is_grabbed_by = true;
                     } else {
@@ -211,8 +306,9 @@ impl EventHandler for Grab {
                     // check grab is fully pulled
                     if gameobject.transform.position.x < 0.0 {
                         self.state = 0.0;
+                        self.check_grab_once = true;
                         let mut target = rc_target.borrow_mut();
-                        target.rebirth()
+                        target.rebirth(true)
                     } else {
                         // target position is same with grab position
                         rc_target
@@ -264,7 +360,7 @@ impl Target {
             rc_gameobject: Rc::new(RefCell::new(GameObject::new())),
             direction: 1.0,
             speed: 800.0,
-            look_at_x: 640.0,
+            look_at_x: 0.0,
         }
     }
 
@@ -281,12 +377,12 @@ impl EventHandler for Target {
 
         self.look_at_x += delta_dist;
 
-        if self.look_at_x > 1080.0 {
+        if self.look_at_x > 440.0 {
             self.direction = -1.0;
-            self.look_at_x = 1080.0;
-        } else if self.look_at_x < 200.0 {
+            self.look_at_x = 440.0;
+        } else if self.look_at_x < -440.0 {
             self.direction = 1.0;
-            self.look_at_x = 200.0;
+            self.look_at_x = -440.0;
         }
 
         {
@@ -324,6 +420,7 @@ struct Character {
     default_image: Rc<Image>,
     motion_image: Rc<Image>,
     rc_gameobject: Rc<RefCell<GameObject>>,
+    is_server: bool,
     move_state: f32,
     move_speed: f32,
     score: i32,
@@ -335,7 +432,11 @@ struct Character {
 }
 
 impl Character {
-    fn new(ctx: &mut Context, image_pool: &mut HashMap<String, Rc<Image>>) -> Character {
+    fn new(
+        ctx: &mut Context,
+        image_pool: &mut HashMap<String, Rc<Image>>,
+        is_server: bool,
+    ) -> Character {
         let rc_gameobject = Rc::new(RefCell::new(GameObject::new()));
         let mut target = Target::new(ctx, image_pool);
         {
@@ -355,6 +456,7 @@ impl Character {
             default_image: load_image(ctx, String::from("/player.png"), image_pool),
             motion_image: load_image(ctx, String::from("/player_grab.png"), image_pool),
             rc_gameobject,
+            is_server,
             move_state: 0.0,
             move_speed: 300.0,
             score: 0,
@@ -366,33 +468,76 @@ impl Character {
         }
     }
 
-    fn rebirth(&mut self) {
+    fn rebirth(&mut self, randomize: bool) {
         {
             let mut gameobject = self.rc_gameobject.borrow_mut();
             let mut rng = rand::thread_rng();
             gameobject.transform.position = Point2 {
-                x: rng.gen_range(300.0..980.0),
-                y: if self.is_opponent { 70.0 } else { 650.0 },
+                x: if randomize {
+                    rng.gen_range(-340.0..340.0)
+                } else {
+                    0.0
+                },
+                y: if self.is_server ^ self.is_opponent {
+                    -290.0
+                } else {
+                    290.0
+                },
             };
-            gameobject.transform.rotation = if self.is_opponent {
+            gameobject.transform.rotation = if self.is_server ^ self.is_opponent {
                 PI / 2.0
             } else {
                 -PI / 2.0
             };
+            gameobject.update_global_transform();
         }
         self.is_grabbed_by = false;
     }
 
     fn set_global_rotation(&self, rotation: f32) {
         self.rc_gameobject.borrow_mut().global_transform.rotation = rotation;
+        self.rc_gameobject.borrow_mut().update_local_transform();
     }
 
     fn set_global_position(&self, position: Point2<f32>) {
+        self.rc_gameobject.borrow_mut().update_local_transform();
         self.rc_gameobject.borrow_mut().global_transform.position = position;
     }
 
     fn get_global_position(&self) -> Point2<f32> {
         self.rc_gameobject.borrow().global_transform.position
+    }
+}
+
+impl Communication for Character {
+    fn get_send_data(&self) -> Vec<u8> {
+        let mut data = vec![];
+        if self.is_opponent {
+            let ig = if self.is_grabbed_by { [1u8] } else { [0u8] };
+            data.extend_from_slice(&ig);
+        } else {
+            let ms = self.move_state.to_ne_bytes();
+            let go = self.rc_gameobject.borrow().get_send_data();
+
+            data.extend_from_slice(&ms);
+            data.extend(go);
+        }
+        data
+    }
+
+    fn set_recv_data(&mut self, buf: &mut Vec<u8>) {
+        if self.is_opponent {
+            let (data, buf) = buf.split_at(4);
+            self.move_state = f32::from_ne_bytes(data[0..4].try_into().unwrap());
+
+            let mut buf = Vec::from(buf);
+            self.rc_gameobject.borrow_mut().set_recv_data(&mut buf);
+        } else {
+            let (data, buf) = buf.split_at(1);
+
+            let ig = u8::from_ne_bytes(data[0..1].try_into().unwrap());
+            self.is_grabbed_by = if ig == 1u8 { true } else { false };
+        }
     }
 }
 
@@ -405,10 +550,11 @@ impl EventHandler for Character {
             self.target.speed = 800.0 * (1.0 - self.grab.state.abs());
             {
                 let mut gameobject = self.rc_gameobject.borrow_mut();
+
                 let delta_vec = gameobject.transform.right();
                 gameobject.transform.position.x += speed * delta_vec.x;
                 gameobject.transform.position.x =
-                    gameobject.transform.position.x.min(980.0).max(300.0);
+                    gameobject.transform.position.x.min(340.0).max(-340.0);
                 gameobject.update_global_transform();
             }
 
@@ -420,6 +566,7 @@ impl EventHandler for Character {
             self.target.update(ctx)?;
             self.grab.update(ctx)?;
         }
+
         Ok(())
     }
 
@@ -469,7 +616,6 @@ impl EventHandler for Character {
             self.grab.set_rotation(self.target.get_rotation());
         }
 
-        self.move_state = 0.0;
         if ggez::input::keyboard::is_key_pressed(ctx, KeyCode::Left) {
             self.move_state = -1.0
         }
@@ -494,30 +640,49 @@ struct GGEZ {
     foreground_image: Rc<Image>,
     rc_player: Rc<RefCell<Character>>,
     rc_opponent: Rc<RefCell<Character>>,
+    rc_global: Rc<RefCell<GameObject>>,
+    stream: TcpStream,
 }
 
 impl GGEZ {
     // Game Setting
-    fn new(ctx: &mut Context, image_pool: &mut HashMap<String, Rc<Image>>) -> GGEZ {
+    fn new(
+        ctx: &mut Context,
+        image_pool: &mut HashMap<String, Rc<Image>>,
+        stream: TcpStream,
+        is_server: bool,
+    ) -> GGEZ {
+        let rc_global = Rc::new(RefCell::new(GameObject::new()));
+        {
+            let mut global = rc_global.borrow_mut();
+            global.transform.position = Point2 { x: 640.0, y: 360.0 };
+            if is_server {
+                global.transform.rotation = PI;
+            }
+            global.update_global_transform();
+        }
+
         let background_image = load_image(ctx, String::from("/background.png"), image_pool);
         let foreground_image = load_image(ctx, String::from("/foreground.png"), image_pool);
 
-        let rc_player = Rc::new(RefCell::new(Character::new(ctx, image_pool)));
-        let rc_opponent = Rc::new(RefCell::new(Character::new(ctx, image_pool)));
+        let rc_player = Rc::new(RefCell::new(Character::new(ctx, image_pool, is_server)));
+        let rc_opponent = Rc::new(RefCell::new(Character::new(ctx, image_pool, is_server)));
         {
             let mut player = rc_player.borrow_mut();
             let mut opponent = rc_opponent.borrow_mut();
+
             player.grab.set_rc_target(&rc_opponent);
             opponent.grab.set_rc_target(&rc_player);
             opponent.is_opponent = true;
+            {
+                let mut playerobject = player.rc_gameobject.borrow_mut();
+                playerobject.set_rc_parent(&rc_global);
 
-            let mut playerobject = player.rc_gameobject.borrow_mut();
-            playerobject.transform.position = Point2 { x: 640.0, y: 650.0 };
-            playerobject.transform.rotation = -PI / 2.0;
-
-            let mut oppoentobject = opponent.rc_gameobject.borrow_mut();
-            oppoentobject.transform.position = Point2 { x: 640.0, y: 70.0 };
-            oppoentobject.transform.rotation = PI / 2.0;
+                let mut oppoentobject = opponent.rc_gameobject.borrow_mut();
+                oppoentobject.set_rc_parent(&rc_global);
+            }
+            player.rebirth(false);
+            opponent.rebirth(false);
         }
 
         GGEZ {
@@ -525,15 +690,41 @@ impl GGEZ {
             foreground_image,
             rc_player,
             rc_opponent,
+            rc_global,
+            stream,
+        }
+    }
+
+    fn send_data(&mut self) {
+        let mut data = self.rc_player.borrow_mut().get_send_data(); // 24 bytes
+        data.extend(self.rc_opponent.borrow_mut().get_send_data()); // 1 byte
+        self.stream.write(data.as_slice()).unwrap();
+        self.stream.flush().unwrap();
+    }
+
+    fn recv_data(&mut self) {
+        let mut buf = [0u8; 25];
+        match self.stream.read_exact(&mut buf) {
+            Ok(_) => {
+                self.rc_opponent
+                    .borrow_mut()
+                    .set_recv_data(&mut Vec::from(&buf[0..24]));
+                self.rc_player
+                    .borrow_mut()
+                    .set_recv_data(&mut Vec::from(&buf[24..25]));
+            }
+            Err(err) => {}
         }
     }
 }
 
 impl EventHandler for GGEZ {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
+        self.send_data();
+        self.recv_data();
+
         self.rc_player.borrow_mut().update(ctx)?;
         self.rc_opponent.borrow_mut().update(ctx)?;
-
         Ok(())
     }
 
@@ -578,14 +769,12 @@ fn load_image(
     path: String,
     image_pool: &mut HashMap<String, Rc<Image>>,
 ) -> Rc<Image> {
-    match unsafe { image_pool.get(&path) } {
+    match image_pool.get(&path) {
         Some(image) => Rc::clone(image),
         None => match Image::new(ctx, path.clone()) {
             Ok(res) => {
                 let image = Rc::new(res);
-                unsafe {
-                    image_pool.insert(path.clone(), Rc::clone(&image));
-                }
+                image_pool.insert(path.clone(), Rc::clone(&image));
                 image
             }
             Err(err) => panic!("Failed to load image: {}", err),
@@ -603,8 +792,32 @@ fn main() {
         Err(err) => panic!("Failed to build context: {}", err),
     };
 
+    let mut is_server = false;
+    let tcp_stream = match TcpListener::bind("127.0.0.1:9999") {
+        Ok(res) => {
+            println!("== Server ==");
+            println!("TCP port 9999 listen...");
+            let mut incoming_streams = res.incoming();
+            let stream = incoming_streams.next().unwrap().unwrap();
+            let opponent_ip_address = stream.peer_addr().unwrap();
+            println!("Opponent connected: {}", opponent_ip_address);
+            stream.set_nonblocking(true).unwrap();
+            is_server = true;
+            stream
+        }
+        Err(err) => {
+            println!("== Client ==");
+            println!("TCP port 9999 connect...");
+            let stream = TcpStream::connect("127.0.0.1:9999").unwrap();
+            let opponent_ip_address = stream.peer_addr().unwrap();
+            println!("Connected to opponent: {}", opponent_ip_address);
+            stream.set_nonblocking(true).unwrap();
+            stream
+        }
+    };
+
     let mut image_pool: HashMap<String, Rc<Image>> = HashMap::new();
 
-    let ggez = GGEZ::new(&mut ctx, &mut image_pool);
+    let ggez = GGEZ::new(&mut ctx, &mut image_pool, tcp_stream, is_server);
     run(ctx, event_loop, ggez);
 }
