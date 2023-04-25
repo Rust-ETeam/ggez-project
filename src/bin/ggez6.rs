@@ -118,10 +118,11 @@ impl GameObject {
             let scaled_pos_x = self.transform.position.x * self.global_transform.scale.x;
             let scaled_pos_y = self.transform.position.y * self.global_transform.scale.y;
             let magnitude = (scaled_pos_x.powf(2.0) + scaled_pos_y.powf(2.0)).sqrt();
+            let radian = scaled_pos_y.atan2(scaled_pos_x);
             self.global_transform.position.x = parent.global_transform.position.x
-                + self.global_transform.rotation.cos() * magnitude;
+                + (parent.global_transform.rotation + radian).cos() * magnitude;
             self.global_transform.position.y = parent.global_transform.position.y
-                + self.global_transform.rotation.sin() * magnitude;
+                + (parent.global_transform.rotation + radian).sin() * magnitude;
         } else {
             self.global_transform = self.transform;
         }
@@ -152,6 +153,10 @@ impl Grab {
     fn set_rotation(&mut self, rotation: f32) {
         self.rc_gameobject.borrow_mut().transform.rotation = rotation;
     }
+
+    fn set_position(&mut self, position: Point2<f32>) {
+        self.rc_gameobject.borrow_mut().transform.position = position;
+    }
 }
 
 impl EventHandler for Grab {
@@ -164,11 +169,10 @@ impl EventHandler for Grab {
             let delta_vec = gameobject.transform.forward();
             gameobject.transform.position.x += speed * delta_vec.x;
             gameobject.transform.position.y += speed * delta_vec.y;
-            // println!("{:?}", gameobject.transform.position);
 
             if gameobject.transform.position.x > self.threshold {
                 // Check Oppoenent
-                gameobject.transform.position = Point2 { x: 0.0, y: 0.0 };
+                gameobject.transform.rotation = 0.0;
                 self.state = 0.0;
             }
 
@@ -188,7 +192,7 @@ impl EventHandler for Grab {
             draw(ctx, self.hand_image.as_ref(), hand_draw_param)?;
             println!(
                 "{:?} {:?}",
-                gameobject.global_transform.position, gameobject.global_transform.rotation
+                gameobject.transform.position, gameobject.global_transform.position
             );
         }
         Ok(())
@@ -264,7 +268,6 @@ impl EventHandler for Target {
                 } else {
                     Color::BLACK
                 });
-            println!("{:?}", gameobject.global_transform.rotation);
             draw(ctx, self.image.as_ref(), draw_param)?;
         }
         Ok(())
@@ -376,6 +379,7 @@ impl EventHandler for Character {
         if keycode == KeyCode::Space {
             self.grab.state = 1.0;
             self.grab.set_rotation(self.target.get_rotation());
+            self.grab.set_position(Point2{x:50.0, y: 70.0});
         }
 
         self.move_state = 0.0;
