@@ -138,13 +138,16 @@ impl GameObject {
     }
 }
 
+//' state {0: nothing, 1: throw, -1: catched}
 struct Grab {
     hand_image: Rc<Image>,
     string_image: Rc<Image>,
     rc_gameobject: Rc<RefCell<GameObject>>,
+    rc_target: Option<Rc<RefCell<Character>>>,
     threshold: f32,
     speed: f32,
     state: f32,
+    check_grab_once: bool,
 }
 
 impl Grab {
@@ -153,10 +156,16 @@ impl Grab {
             hand_image: load_image(ctx, String::from("/grab_hand.png"), image_pool),
             string_image: load_image(ctx, String::from("/grab_string.png"), image_pool),
             rc_gameobject: Rc::new(RefCell::new(GameObject::new())),
+            rc_target: None,
             threshold: 580.0,
             speed: 800.0,
             state: 0.0,
+            check_grab_once: false,
         }
+    }
+
+    fn set_rc_target(&mut self, rc_target: &Rc<RefCell<Character>>) {
+        self.rc_target = Some(Rc::clone(rc_target));
     }
 
     fn set_rotation(&mut self, rotation: f32) {
@@ -179,15 +188,39 @@ impl EventHandler for Grab {
             gameobject.transform.position.x += speed * delta_vec.x;
             gameobject.transform.position.y += speed * delta_vec.y;
 
-            if gameobject.transform.position.x > self.threshold {
-                // Check Oppoenent
-                gameobject.transform.rotation = 0.0;
-                self.state = 0.0;
-            }
-
             gameobject.update_global_transform();
-        }
 
+            if self.state == 1.0 && gameobject.transform.position.x > self.threshold {
+                self.rc_target.as_ref().map(|rc_target| {
+                    let mut target = rc_target.borrow_mut();
+                    // Check target is in grab range (50.0)
+                    if (target.get_global_position().x - gameobject.global_transform.position.x)
+                        .abs()
+                        < 50.0
+                    {
+                        self.state = -1.0;
+                        self.check_grab_once = true;
+                        target.is_grabbed_by = true;
+                    } else {
+                        self.state = 0.0;
+                    }
+                });
+            } else if self.state == -1.0 {
+                self.rc_target.as_ref().map(|rc_target| {
+                    // check grab is fully pulled
+                    if gameobject.transform.position.x < 0.0 {
+                        self.state = 0.0;
+                        let mut target = rc_target.borrow_mut();
+                        target.rebirth()
+                    } else {
+                        // target position is same with grab position
+                        rc_target
+                            .borrow_mut()
+                            .set_global_position(gameobject.global_transform.position);
+                    }
+                });
+            }
+        }
         Ok(())
     }
 
@@ -195,7 +228,8 @@ impl EventHandler for Grab {
         if self.state != 0.0 {
             let gameobject = self.rc_gameobject.borrow();
 
-            let scale_y = gameobject.transform.position.x / (self.string_image.as_ref().height() as f32);
+            let scale_y =
+                gameobject.transform.magnitude() / (self.string_image.as_ref().height() as f32);
 
             let string_draw_param = DrawParam::new()
                 .dest(gameobject.global_transform.position)
@@ -235,10 +269,6 @@ impl Target {
 
     fn get_rotation(&self) -> f32 {
         self.rc_gameobject.borrow().transform.rotation
-    }
-
-    fn set_rotation(&mut self, rotation: f32) {
-        self.rc_gameobject.borrow_mut().transform.rotation = rotation;
     }
 }
 
@@ -300,6 +330,7 @@ struct Character {
 
     target: Target,
     grab: Grab,
+    is_grabbed_by: bool,
 }
 
 impl Character {
@@ -330,36 +361,63 @@ impl Character {
 
             target,
             grab,
+            is_grabbed_by: false,
         }
     }
 
-    fn set_rotation(&mut self, rotation: f32) {
-        self.rc_gameobject.borrow_mut().transform.rotation = rotation;
+    fn rebirth(&mut self) {
+        {
+            let mut gameobject = self.rc_gameobject.borrow_mut();
+            let mut rng = rand::thread_rng();
+            gameobject.transform.position = Point2 {
+                x: rng.gen_range(300.0..980.0),
+                y: if self.is_opponent { 70.0 } else { 650.0 },
+            }
+        }
+        self.is_grabbed_by = false;
+    }
+
+    fn set_global_position(&self, position: Point2<f32>) {
+        self.rc_gameobject.borrow_mut().global_transform.position = position;
+    }
+
+    fn get_global_position(&self) -> Point2<f32> {
+        self.rc_gameobject.borrow().global_transform.position
     }
 }
 
 impl EventHandler for Character {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
-        let delta = ggez::timer::delta(ctx);
-        let dt = delta.as_secs() as f32 + delta.subsec_nanos() as f32 * 1e-9;
-        let speed = dt * self.move_state * self.move_speed * (1.0 - self.grab.state.abs());
-        self.target.speed = 800.0 * (1.0 - self.grab.state.abs());
-        {
-            let mut gameobject = self.rc_gameobject.borrow_mut();
-            let delta_vec = gameobject.transform.right();
-            gameobject.transform.position.x += speed * delta_vec.x;
-            gameobject.transform.position.x = gameobject.transform.position.x.min(980.0).max(300.0);
-            gameobject.update_global_transform();
-        }
+        if !self.is_grabbed_by {
+            let delta = ggez::timer::delta(ctx);
+            let dt = delta.as_secs() as f32 + delta.subsec_nanos() as f32 * 1e-9;
+            let speed = dt * self.move_state * self.move_speed * (1.0 - self.grab.state.abs());
+            self.target.speed = 800.0 * (1.0 - self.grab.state.abs());
+            {
+                let mut gameobject = self.rc_gameobject.borrow_mut();
+                let delta_vec = gameobject.transform.right();
+                gameobject.transform.position.x += speed * delta_vec.x;
+                gameobject.transform.position.x =
+                    gameobject.transform.position.x.min(980.0).max(300.0);
+                gameobject.update_global_transform();
+            }
 
-        self.target.update(ctx)?;
-        self.grab.update(ctx)?;
+            if self.grab.check_grab_once {
+                self.score += 1;
+                self.grab.check_grab_once = false;
+            }
+
+            self.target.update(ctx)?;
+            self.grab.update(ctx)?;
+        }
         Ok(())
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
-        self.target.draw(ctx)?;
-        self.grab.draw(ctx)?;
+        if !self.is_grabbed_by {
+            self.target.draw(ctx)?;
+            self.grab.draw(ctx)?;
+        }
         {
             let gameobject = self.rc_gameobject.borrow();
             let (draw_image, rotation) = if self.grab.state == 0.0 {
@@ -424,8 +482,8 @@ impl EventHandler for Character {
 struct GGEZ {
     background_image: Rc<Image>,
     foreground_image: Rc<Image>,
-    player: Character,
-    opponent: Character,
+    rc_player: Rc<RefCell<Character>>,
+    rc_opponent: Rc<RefCell<Character>>,
 }
 
 impl GGEZ {
@@ -434,34 +492,37 @@ impl GGEZ {
         let background_image = load_image(ctx, String::from("/background.png"), image_pool);
         let foreground_image = load_image(ctx, String::from("/foreground.png"), image_pool);
 
-        let mut player = Character::new(ctx, image_pool);
+        let rc_player = Rc::new(RefCell::new(Character::new(ctx, image_pool)));
+        let rc_opponent = Rc::new(RefCell::new(Character::new(ctx, image_pool)));
         {
-            let mut gameobject = player.rc_gameobject.borrow_mut();
-            gameobject.transform.position = Point2 { x: 640.0, y: 650.0 };
-            gameobject.transform.rotation = -PI / 2.0;
-        }
+            let mut player = rc_player.borrow_mut();
+            let mut opponent = rc_opponent.borrow_mut();
+            player.grab.set_rc_target(&rc_opponent);
+            opponent.grab.set_rc_target(&rc_player);
+            opponent.is_opponent = true;
 
-        let mut opponent = Character::new(ctx, image_pool);
-        opponent.is_opponent = true;
-        {
-            let mut gameobject = opponent.rc_gameobject.borrow_mut();
-            gameobject.transform.position = Point2 { x: 640.0, y: 70.0 };
-            gameobject.transform.rotation = PI / 2.0;
+            let mut playerobject = player.rc_gameobject.borrow_mut();
+            playerobject.transform.position = Point2 { x: 640.0, y: 650.0 };
+            playerobject.transform.rotation = -PI / 2.0;
+
+            let mut oppoentobject = opponent.rc_gameobject.borrow_mut();
+            oppoentobject.transform.position = Point2 { x: 640.0, y: 70.0 };
+            oppoentobject.transform.rotation = PI / 2.0;
         }
 
         GGEZ {
             background_image,
             foreground_image,
-            player,
-            opponent,
+            rc_player,
+            rc_opponent,
         }
     }
 }
 
 impl EventHandler for GGEZ {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
-        self.player.update(ctx)?;
-        self.opponent.update(ctx)?;
+        self.rc_player.borrow_mut().update(ctx)?;
+        self.rc_opponent.borrow_mut().update(ctx)?;
 
         Ok(())
     }
@@ -471,8 +532,8 @@ impl EventHandler for GGEZ {
         draw(ctx, self.background_image.as_ref(), DrawParam::new())?;
         draw(ctx, self.foreground_image.as_ref(), DrawParam::new())?;
 
-        self.player.draw(ctx)?;
-        self.opponent.draw(ctx)?;
+        self.rc_player.borrow_mut().draw(ctx)?;
+        self.rc_opponent.borrow_mut().draw(ctx)?;
 
         present(ctx)?;
         Ok(())
@@ -488,12 +549,16 @@ impl EventHandler for GGEZ {
         if ggez::input::keyboard::is_key_pressed(ctx, KeyCode::Escape) {
             ggez::event::quit(ctx);
         }
-        self.player.key_down_event(ctx, keycode, keymods, repeat);
+        self.rc_player
+            .borrow_mut()
+            .key_down_event(ctx, keycode, keymods, repeat);
         // self.opponent.key_down_event(ctx, keycode, keymods, repeat);
     }
 
     fn key_up_event(&mut self, ctx: &mut Context, keycode: KeyCode, keymods: KeyMods) {
-        self.player.key_up_event(ctx, keycode, keymods);
+        self.rc_player
+            .borrow_mut()
+            .key_up_event(ctx, keycode, keymods);
         // self.opponent.key_up_event(ctx, keycode, keymods);
     }
 }
