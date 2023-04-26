@@ -286,13 +286,13 @@ impl EventHandler for Grab {
 
             gameobject.update_global_transform();
 
-            if self.state == 1.0 && gameobject.transform.position.x > self.threshold {
-                self.rc_target.as_ref().map(|rc_target| {
-                    let mut target = rc_target.borrow_mut();
-                    // Check target is in grab range (75.0)
+            self.rc_target.as_ref().map(|rc_target| {
+                let mut target = rc_target.borrow_mut();
+                if self.state == 1.0 && gameobject.transform.position.x > self.threshold {
+                    // Check target is in grab range (80.0)
                     if (target.get_global_position().x - gameobject.global_transform.position.x)
                         .abs()
-                        < 75.0
+                        < 80.0
                     {
                         self.state = -1.0;
                         target.set_global_rotation(gameobject.global_transform.rotation - PI);
@@ -300,23 +300,18 @@ impl EventHandler for Grab {
                     } else {
                         self.state = 0.0;
                     }
-                });
-            } else if self.state == -1.0 {
-                self.rc_target.as_ref().map(|rc_target| {
-                    // check grab is fully pulled
+                } else if self.state == -1.0 {
                     if gameobject.transform.position.x < 0.0 {
                         self.state = 0.0;
                         self.check_grab_once = true;
-                        let mut target = rc_target.borrow_mut();
-                        target.rebirth(true)
                     } else {
                         // target position is same with grab position
-                        rc_target
-                            .borrow_mut()
-                            .set_global_position(gameobject.global_transform.position);
+                        target.set_global_position(gameobject.global_transform.position);
                     }
-                });
-            }
+                } else if self.state == 0.0 && target.is_grabbed_by {
+                    target.rebirth(true);
+                }
+            });
         }
         Ok(())
     }
@@ -404,13 +399,9 @@ impl EventHandler for Target {
             let mut gameobject = self.rc_gameobject.borrow_mut();
             if let Some(rc_parent) = gameobject.rc_parent.clone() {
                 let parent = rc_parent.borrow();
-                let dist_x = if parent.transform.position.y < 0.0 {
-                    parent.transform.position.x - self.look_at_x
-                } else {
-                    self.look_at_x - parent.transform.position.x
-                };
+                let offset = parent.transform.position.y / parent.transform.position.y.abs();
+                let dist_x = offset * (self.look_at_x - parent.transform.position.x);
                 gameobject.transform.rotation = dist_x.atan2(580.0_f32);
-                println!("{:?} {}", parent.transform.position, self.look_at_x);
             }
             gameobject.update_global_transform();
         }
@@ -533,9 +524,11 @@ impl Communication for Character {
     fn get_send_data(&self) -> Vec<u8> {
         let mut data = vec![];
         let ms = self.move_state.to_ne_bytes();
+        let sc = self.score.to_ne_bytes();
         let go = self.rc_gameobject.borrow().get_send_data();
 
         data.extend_from_slice(&ms);
+        data.extend_from_slice(&sc);
         data.extend(go);
 
         data.extend(self.target.get_send_data());
@@ -545,8 +538,9 @@ impl Communication for Character {
     }
 
     fn set_recv_data(&mut self, buf: &mut Vec<u8>) {
-        let (data, buf) = buf.split_at(4);
+        let (data, buf) = buf.split_at(8);
         self.move_state = f32::from_ne_bytes(data[0..4].try_into().unwrap());
+        self.score = i32::from_ne_bytes(data[4..8].try_into().unwrap());
 
         let (data, buf) = buf.split_at(20);
         let mut data = Vec::from(data);
@@ -627,7 +621,7 @@ impl EventHandler for Character {
         repeat: bool,
     ) {
         // if keycode == KeyCode::Space && self.player_grab_state == 0 {
-        if keycode == KeyCode::Space {
+        if keycode == KeyCode::Space && self.grab.state == 0.0 {
             self.grab.state = 1.0;
 
             self.grab.set_position(Transform::rotate_point(
@@ -695,6 +689,11 @@ impl GGEZ {
 
             player.grab.set_rc_target(&rc_opponent);
             opponent.grab.set_rc_target(&rc_player);
+            if is_server {
+                opponent.target.direction = -1.0;
+            } else {
+                player.target.direction = -1.0;
+            }
             opponent.is_opponent = true;
             {
                 let mut playerobject = player.rc_gameobject.borrow_mut();
@@ -725,7 +724,7 @@ impl GGEZ {
     }
 
     fn recv_data(&mut self) {
-        let mut buf = [0u8; 56];
+        let mut buf = [0u8; 60];
         match self.stream.read_exact(&mut buf) {
             Ok(_) => {
                 self.rc_opponent
@@ -739,6 +738,9 @@ impl GGEZ {
 
 impl EventHandler for GGEZ {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
+        if self.is_game_end {
+            return Ok(());
+        }
         self.send_data();
         self.recv_data();
 
@@ -793,10 +795,10 @@ impl EventHandler for GGEZ {
                     game_end_draw_params,
                 )?;
             }
+        } else {
+            self.rc_player.borrow_mut().draw(ctx)?;
+            self.rc_opponent.borrow_mut().draw(ctx)?;
         }
-
-        self.rc_player.borrow_mut().draw(ctx)?;
-        self.rc_opponent.borrow_mut().draw(ctx)?;
 
         present(ctx)?;
         Ok(())
@@ -815,14 +817,12 @@ impl EventHandler for GGEZ {
         self.rc_player
             .borrow_mut()
             .key_down_event(ctx, keycode, keymods, repeat);
-        // self.opponent.key_down_event(ctx, keycode, keymods, repeat);
     }
 
     fn key_up_event(&mut self, ctx: &mut Context, keycode: KeyCode, keymods: KeyMods) {
         self.rc_player
             .borrow_mut()
             .key_up_event(ctx, keycode, keymods);
-        // self.opponent.key_up_event(ctx, keycode, keymods);
     }
 }
 
