@@ -580,6 +580,9 @@ impl EventHandler for Character {
 
             self.target.update(ctx)?;
             self.grab.update(ctx)?;
+        } else {
+            self.grab.state = 0.0;
+            self.move_state = 0.0;
         }
 
         Ok(())
@@ -620,7 +623,6 @@ impl EventHandler for Character {
         keymods: KeyMods,
         repeat: bool,
     ) {
-        // if keycode == KeyCode::Space && self.player_grab_state == 0 {
         if keycode == KeyCode::Space && self.grab.state == 0.0 {
             self.grab.state = 1.0;
 
@@ -738,11 +740,11 @@ impl GGEZ {
 
 impl EventHandler for GGEZ {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
+        self.send_data();
+        self.recv_data();
         if self.is_game_end {
             return Ok(());
         }
-        self.send_data();
-        self.recv_data();
 
         self.rc_player.borrow_mut().update(ctx)?;
         self.rc_opponent.borrow_mut().update(ctx)?;
