@@ -28,7 +28,7 @@ use game_state::GameState;
 use menu_state::MenuState;
 
 struct Game {
-    // game_state: GameState, 
+    game_state: GameState, 
     menu_state: MenuState, 
     current_state : EState, 
 }
@@ -40,7 +40,7 @@ impl Game {
     ) -> Game {
         Game {
             menu_state : MenuState::new(ctx, image_pool), 
-            // game_state : GameState::new(ctx, image_pool, ), 
+            game_state : GameState::new(ctx, image_pool), 
             current_state : EState::Menu,
         }
     }
@@ -50,13 +50,17 @@ impl EventHandler for Game {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
         let ret = match self.current_state {
             EState::Menu => self.menu_state.update(ctx),
-            EState::Game => todo!(),
+            EState::Game => self.game_state.update(ctx),
             EState::None => EState::None, 
         };
 
         match ret {
             EState::Game => {
                 self.current_state = EState::Game;
+                self.game_state.initialize(
+                    self.menu_state.IsServer(), 
+                    &self.menu_state.tcp_stream
+                );
                 println!("Game Started!");
             },
             (_) => {},
@@ -69,7 +73,7 @@ impl EventHandler for Game {
 
         match self.current_state {
             EState::Menu => self.menu_state.draw(ctx),
-            EState::Game => todo!(),
+            EState::Game => self.game_state.draw(ctx),
             EState::None => todo!(), 
         };
 
@@ -80,7 +84,7 @@ impl EventHandler for Game {
     fn key_down_event(&mut self, ctx: &mut Context, keycode: KeyCode, keymods: KeyMods, repeat: bool) {
         match self.current_state {
             EState::Menu => self.menu_state.key_down_event(ctx, keycode, keymods, repeat),
-            EState::Game => todo!(),
+            EState::Game => self.game_state.key_down_event(ctx, keycode, keymods, repeat),
             EState::None => todo!(), 
         }
     }
@@ -88,7 +92,7 @@ impl EventHandler for Game {
     fn key_up_event(&mut self, ctx: &mut Context, keycode: KeyCode, keymods: KeyMods) {
         match self.current_state {
             EState::Menu => self.menu_state.key_up_event(ctx, keycode, keymods), 
-            EState::Game => todo!(),
+            EState::Game => self.game_state.key_up_event(ctx, keycode, keymods), 
             EState::None => todo!(), 
         }
     }
@@ -96,7 +100,7 @@ impl EventHandler for Game {
     fn mouse_button_down_event(&mut self, ctx: &mut Context, button: MouseButton, x: f32, y: f32) {
         match self.current_state {
             EState::Menu => self.menu_state.mouse_button_down_event(ctx, button, x, y), 
-            EState::Game => todo!(),
+            EState::Game => self.game_state.mouse_button_down_event(ctx, button, x, y), 
             EState::None => todo!(), 
         }
     }

@@ -451,7 +451,7 @@ impl Character {
         is_server: bool,
     ) -> Character {
         let rc_gameobject = Rc::new(RefCell::new(GameObject::new()));
-        let mut target = Target::new(ctx, image_pool);
+        let target = Target::new(ctx, image_pool);
         {
             target
                 .rc_gameobject
@@ -459,7 +459,7 @@ impl Character {
                 .set_rc_parent(&rc_gameobject);
         }
 
-        let mut grab = Grab::new(ctx, image_pool);
+        let grab = Grab::new(ctx, image_pool);
         {
             grab.rc_gameobject
                 .borrow_mut()
@@ -660,24 +660,179 @@ pub struct GameState {
     rc_player: Rc<RefCell<Character>>,
     rc_opponent: Rc<RefCell<Character>>,
     rc_global: Rc<RefCell<GameObject>>,
-    stream: Option<TcpStream>,
+    stream: Option<Rc<RefCell<TcpStream>>>,
     is_game_end: bool,
+}
+
+impl GameState {
+    pub fn initialize(&mut self, is_server : bool, tcp_stream : & Option<Rc<RefCell<TcpStream>>>) {
+        {
+            let mut global = self.rc_global.borrow_mut();
+            global.transform.position = Point2 { x: 640.0, y: 360.0 };
+            if is_server {
+                global.transform.rotation = PI;
+            }
+            global.update_global_transform();
+        }
+
+        {
+            let mut player = self.rc_player.borrow_mut();
+            let mut opponent = self.rc_opponent.borrow_mut();
+
+            player.is_server = is_server;
+            opponent.is_server = is_server;
+
+            player.grab.set_rc_target(&self.rc_opponent);
+            opponent.grab.set_rc_target(&self.rc_player);
+            if is_server {
+                opponent.target.direction = -1.0;
+            } else {
+                player.target.direction = -1.0;
+            }
+            opponent.is_opponent = true;
+            {
+                let mut playerobject = player.rc_gameobject.borrow_mut();
+                playerobject.set_rc_parent(&self.rc_global);
+
+                let mut oppoentobject = opponent.rc_gameobject.borrow_mut();
+                oppoentobject.set_rc_parent(&self.rc_global);
+            }
+            player.rebirth(false);
+            opponent.rebirth(false);
+        }
+    }
+
+    // Game Setting
+    pub fn new(
+        ctx: &mut Context,
+        image_pool: &mut HashMap<String, Rc<Image>>,
+    ) -> GameState {
+        let rc_global = Rc::new(RefCell::new(GameObject::new()));
+
+        let background_image = load_image(ctx, String::from("/background.png"), image_pool);
+        let foreground_image = load_image(ctx, String::from("/foreground.png"), image_pool);
+
+        let rc_player = Rc::new(RefCell::new(Character::new(ctx, image_pool, false)));
+        let rc_opponent = Rc::new(RefCell::new(Character::new(ctx, image_pool, false)));
+
+        GameState {
+            background_image,
+            foreground_image,
+            rc_player,
+            rc_opponent,
+            rc_global,
+            stream : None,
+            is_game_end: false,
+        }
+    }
+
+    fn send_data(&mut self) {
+        let mut data = self.rc_player.borrow_mut().get_send_data(); // 24 bytes
+        if let Some(st) = &self.stream {
+            let mut _st = st.try_borrow_mut().unwrap();
+            _st.write(data.as_slice()).unwrap();
+            _st.flush().unwrap();
+        }
+    }
+
+    fn recv_data(&mut self) {
+        let mut buf = [0u8; 60];
+        if let Some(st) = &self.stream {
+            let mut _st = st.try_borrow_mut().unwrap();
+
+            match _st.read_exact(&mut buf) {
+            Ok(_) => {
+                self.rc_opponent
+                    .borrow_mut()
+                    .set_recv_data(&mut Vec::from(buf));
+            }
+            Err(err) => {}
+        }   
+        }
+    }
 }
 
 impl IState for GameState {
     fn update(&mut self, _ctx: &mut ggez::Context) -> EState {
-        todo!()
+        self.send_data();
+        self.recv_data();
+        if self.is_game_end {
+            return EState::None;
+        }
+
+        self.rc_player.borrow_mut().update(_ctx).expect("player update failed");
+        self.rc_opponent.borrow_mut().update(_ctx).expect("opponent update failed");
+
+        self.is_game_end =
+            self.rc_player.borrow().score == 3 || self.rc_opponent.borrow().score == 3;
+        
+        EState::None
     }
 
-    fn draw(&mut self, _ctx: &mut ggez::Context) {
-        todo!()
+    fn draw(&mut self, ctx: &mut ggez::Context) {
+        clear(ctx, Color::WHITE);
+        draw(ctx, self.background_image.as_ref(), DrawParam::new()).expect("draw failed");
+        draw(ctx, self.foreground_image.as_ref(), DrawParam::new()).expect("draw failed");
+
+        // Draw Score
+        let opponent_score_draw_params = DrawParam::new()
+            .dest(Point2 { x: 640.0, y: 220.0 })
+            .offset(Point2 { x: 0.5, y: 0.5 })
+            .scale([2.0, 2.0])
+            .color(Color::WHITE);
+        draw(
+            ctx,
+            &Text::new(format!("{}", self.rc_opponent.borrow().score)),
+            opponent_score_draw_params,
+        ).expect("draw failed");
+
+        let player_score_draw_params = DrawParam::new()
+            .dest(Point2 { x: 640.0, y: 450.0 })
+            .offset(Point2 { x: 0.5, y: 0.5 })
+            .scale([3.0, 3.0])
+            .color(Color::WHITE);
+        draw(
+            ctx,
+            &Text::new(format!("{}", self.rc_player.borrow().score)),
+            player_score_draw_params,
+        ).expect("draw failed");
+
+        if self.is_game_end {
+            let game_end_draw_params = DrawParam::new()
+                .dest(Point2 { x: 640.0, y: 260.0 })
+                .offset(Point2 { x: 0.5, y: 0.5 })
+                .scale([5.0, 5.0])
+                .color(Color::WHITE);
+            if self.rc_player.borrow().score == 3 {
+                draw(ctx, &Text::new("You Win!\nPress ESC"), game_end_draw_params).expect("draw failed");
+            } else {
+                draw(
+                    ctx,
+                    &Text::new("Opponent Win!\nPress ESC"),
+                    game_end_draw_params,
+                ).expect("draw failed");
+            }
+        } else {
+            self.rc_player.borrow_mut().draw(ctx).expect("draw failed");
+            self.rc_opponent.borrow_mut().draw(ctx).expect("draw failed");
+        }
+
+        // don't have to do this here. it makes flickering. 
+        // present(ctx).expect("draw failed");
     }
 
     fn key_down_event(&mut self, ctx: &mut Context, keycode: KeyCode, keymods: KeyMods, repeat: bool) {
-        todo!()
+        if ggez::input::keyboard::is_key_pressed(ctx, KeyCode::Escape) {
+            ggez::event::quit(ctx);
+        }
+        self.rc_player
+            .borrow_mut()
+            .key_down_event(ctx, keycode, keymods, repeat);
     }
 
     fn key_up_event(&mut self, ctx: &mut Context, keycode: KeyCode, keymods: KeyMods) {
-        todo!()
+        self.rc_player
+            .borrow_mut()
+            .key_up_event(ctx, keycode, keymods);
     }
 }

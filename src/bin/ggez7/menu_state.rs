@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
@@ -52,7 +53,7 @@ pub struct MenuState {
 
     sender : SyncSender<TcpStream>, 
     receiver : Receiver<TcpStream>,
-    pub tcp_stream : Option<Rc<TcpStream>>,
+    pub tcp_stream : Option<Rc<RefCell<TcpStream>>>,
 }
 
 impl MenuState {
@@ -104,7 +105,7 @@ impl IState for MenuState {
             EInnerState::waiting_guest => {
                 let res = self.receiver.try_recv();
                 if res.is_ok() {
-                    self.tcp_stream = Some(Rc::new(res.unwrap()));
+                    self.tcp_stream = Some(Rc::new(RefCell::new(res.unwrap())));
                     self.should_end_state = true;
                 }
             },
@@ -226,7 +227,7 @@ impl IState for MenuState {
                         let opponent_ip_address = stream.peer_addr().unwrap();
                         println!("Connected to opponent: {}", opponent_ip_address);
                         stream.set_nonblocking(true).unwrap();
-                        self.tcp_stream = Some(Rc::new(stream));
+                        self.tcp_stream = Some(Rc::new(RefCell::new(stream)));
                         self.should_end_state = true;
                     }
                     _ => {}
