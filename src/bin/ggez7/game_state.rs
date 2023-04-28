@@ -666,6 +666,10 @@ pub struct GameState {
 
 impl GameState {
     pub fn initialize(&mut self, is_server : bool, tcp_stream : & Option<Rc<RefCell<TcpStream>>>) {
+        if let Some(i) = tcp_stream{
+            self.stream = Some(Rc::clone(&i));
+        }
+        
         {
             let mut global = self.rc_global.borrow_mut();
             global.transform.position = Point2 { x: 640.0, y: 360.0 };

@@ -57,6 +57,7 @@ impl EventHandler for Game {
         match ret {
             EState::Game => {
                 self.current_state = EState::Game;
+                println!("IsServer: {}", self.menu_state.IsServer());
                 self.game_state.initialize(
                     self.menu_state.IsServer(), 
                     &self.menu_state.tcp_stream
