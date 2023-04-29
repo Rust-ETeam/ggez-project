@@ -1,7 +1,7 @@
 use ggez::conf::{WindowMode, WindowSetup};
 use ggez::event::quit;
 use ggez::event::{run, EventHandler, KeyCode, KeyMods};
-use ggez::graphics::{clear, draw, present, Color, DrawParam, Image, Text};
+use ggez::graphics::{clear, draw, Color, DrawParam, Image, Text};
 use ggez::input::keyboard::is_key_pressed;
 use ggez::mint::Point2;
 use ggez::timer::delta;
@@ -19,7 +19,7 @@ use std::io::Read;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 
-use crate::helper::{load_image, IState, EState};
+use crate::helper::{load_image, EState, IState};
 
 pub trait Communication {
     fn get_send_data(&self) -> Vec<u8>;
@@ -429,6 +429,83 @@ impl EventHandler for Target {
     }
 }
 
+struct Flash {
+    image: Rc<Image>,
+    cooldown_image: Rc<Image>,
+    cooltime: f32,
+    cooldown: f32,
+    distance: f32,
+}
+
+impl Flash {
+    fn new(ctx: &mut Context, image_pool: &mut HashMap<String, Rc<Image>>) -> Flash {
+        Flash {
+            image: load_image(ctx, String::from("/flash.png"), image_pool),
+            cooldown_image: load_image(ctx, String::from("/cooldown.png"), image_pool),
+            cooltime: 5.0,
+            cooldown: 0.0,
+            distance: 200.0,
+        }
+    }
+
+    fn use_skill(&mut self, rc_gameobject: Rc<RefCell<GameObject>>, direction: f32) {
+        if self.cooldown > 0.0 || direction == 0.0 {
+            return;
+        }
+        self.cooldown = self.cooltime;
+        {
+            let mut gameobject = rc_gameobject.borrow_mut();
+            let direction = gameobject.transform.right().x * direction;
+            gameobject
+                .transform
+                .move_offset_x(direction * self.distance);
+        }
+    }
+}
+
+impl EventHandler for Flash {
+    fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
+        let delta = ggez::timer::delta(ctx);
+        let dt = delta.as_secs() as f32 + delta.subsec_nanos() as f32 * 1e-9;
+        self.cooldown = (self.cooldown - dt).max(0.0);
+        Ok(())
+    }
+
+    fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
+        let text_draw_params = DrawParam::new()
+            .dest(Point2 { x: 50.0, y: 685.0 })
+            .scale([1.4, 1.4])
+            .color(Color::YELLOW);
+        draw(ctx, &Text::new("Shift"), text_draw_params)?;
+
+        let draw_param = DrawParam::new()
+            .dest(Point2 { x: 80.0, y: 640.0 })
+            .offset(Point2 { x: 0.5, y: 0.5 })
+            .scale(Point2 { x: 0.2, y: 0.2 });
+        draw(ctx, self.image.as_ref(), draw_param)?;
+
+        if self.cooldown > 0.0 {
+            let cooldown_rect_draw_params = DrawParam::new()
+                .dest(Point2 { x: 80.0, y: 605.0 })
+                .offset(Point2 { x: 0.5, y: 0.0 })
+                .scale([0.32, 0.32])
+                .color(Color::from_rgba(0, 0, 0, 200));
+            draw(ctx, self.cooldown_image.as_ref(), cooldown_rect_draw_params)?;
+
+            let cooldown_text_draw_params = DrawParam::new()
+                .dest(Point2 { x: 50.0, y: 620.0 })
+                .scale([2.4, 2.4])
+                .color(Color::WHITE);
+            draw(
+                ctx,
+                &Text::new(format!("{:.1}", self.cooldown)),
+                cooldown_text_draw_params,
+            )?;
+        }
+        Ok(())
+    }
+}
+
 struct Character {
     default_image: Rc<Image>,
     motion_image: Rc<Image>,
@@ -442,6 +519,7 @@ struct Character {
     target: Target,
     grab: Grab,
     is_grabbed_by: bool,
+    flash: Flash,
 }
 
 impl Character {
@@ -478,6 +556,7 @@ impl Character {
             target,
             grab,
             is_grabbed_by: false,
+            flash: Flash::new(ctx, image_pool),
         }
     }
 
@@ -586,6 +665,7 @@ impl EventHandler for Character {
             self.grab.state = 0.0;
             self.move_state = 0.0;
         }
+        self.flash.update(ctx)?;
 
         Ok(())
     }
@@ -615,6 +695,9 @@ impl EventHandler for Character {
                 .offset(Point2 { x: 0.5, y: 0.5 });
             draw(ctx, draw_image.as_ref(), draw_param)?;
         }
+        if !self.is_opponent {
+            self.flash.draw(ctx)?;
+        }
         Ok(())
     }
 
@@ -641,6 +724,11 @@ impl EventHandler for Character {
         if ggez::input::keyboard::is_key_pressed(ctx, KeyCode::Right) {
             self.move_state = 1.0
         }
+
+        if keycode == KeyCode::LShift && self.grab.state == 0.0 {
+            self.flash
+                .use_skill(self.rc_gameobject.clone(), self.move_state);
+        }
     }
 
     fn key_up_event(&mut self, ctx: &mut Context, keycode: KeyCode, keymods: KeyMods) {
@@ -662,14 +750,15 @@ pub struct GameState {
     rc_global: Rc<RefCell<GameObject>>,
     stream: Option<Rc<RefCell<TcpStream>>>,
     is_game_end: bool,
+    last_recv: f32,
 }
 
 impl GameState {
-    pub fn initialize(&mut self, is_server : bool, tcp_stream : & Option<Rc<RefCell<TcpStream>>>) {
-        if let Some(i) = tcp_stream{
+    pub fn initialize(&mut self, is_server: bool, tcp_stream: &Option<Rc<RefCell<TcpStream>>>) {
+        if let Some(i) = tcp_stream {
             self.stream = Some(Rc::clone(&i));
         }
-        
+
         {
             let mut global = self.rc_global.borrow_mut();
             global.transform.position = Point2 { x: 640.0, y: 360.0 };
@@ -707,10 +796,7 @@ impl GameState {
     }
 
     // Game Setting
-    pub fn new(
-        ctx: &mut Context,
-        image_pool: &mut HashMap<String, Rc<Image>>,
-    ) -> GameState {
+    pub fn new(ctx: &mut Context, image_pool: &mut HashMap<String, Rc<Image>>) -> GameState {
         let rc_global = Rc::new(RefCell::new(GameObject::new()));
 
         let background_image = load_image(ctx, String::from("/background.png"), image_pool);
@@ -725,13 +811,19 @@ impl GameState {
             rc_player,
             rc_opponent,
             rc_global,
-            stream : None,
+            stream: None,
             is_game_end: false,
+            last_recv: 0.0,
         }
     }
 
-    fn send_data(&mut self) {
-        let mut data = self.rc_player.borrow_mut().get_send_data(); // 24 bytes
+    fn send_data(&mut self, ctx: &mut Context) {
+        let mut data = vec![];
+        let sst = ggez::timer::time_since_start(ctx)
+            .as_secs_f32()
+            .to_ne_bytes();
+        data.extend_from_slice(&sst);
+        data.extend(self.rc_player.borrow_mut().get_send_data()); // 24 bytes
         if let Some(st) = &self.stream {
             let mut _st = st.try_borrow_mut().unwrap();
             _st.write(data.as_slice()).unwrap();
@@ -740,36 +832,47 @@ impl GameState {
     }
 
     fn recv_data(&mut self) {
-        let mut buf = [0u8; 60];
+        let mut buf = [0u8; 64];
         if let Some(st) = &self.stream {
             let mut _st = st.try_borrow_mut().unwrap();
 
             match _st.read_exact(&mut buf) {
-            Ok(_) => {
-                self.rc_opponent
-                    .borrow_mut()
-                    .set_recv_data(&mut Vec::from(buf));
+                Ok(_) => {
+                    let (data, buf) = buf.split_at(4);
+                    let recv_time = f32::from_ne_bytes(data[0..4].try_into().unwrap());
+                    if recv_time > self.last_recv {
+                        self.rc_opponent
+                            .borrow_mut()
+                            .set_recv_data(&mut Vec::from(buf));
+                        self.last_recv = recv_time;
+                    }
+                }
+                Err(err) => {}
             }
-            Err(err) => {}
-        }   
         }
     }
 }
 
 impl IState for GameState {
     fn update(&mut self, _ctx: &mut ggez::Context) -> EState {
-        self.send_data();
+        self.send_data(_ctx);
         self.recv_data();
         if self.is_game_end {
             return EState::None;
         }
 
-        self.rc_player.borrow_mut().update(_ctx).expect("player update failed");
-        self.rc_opponent.borrow_mut().update(_ctx).expect("opponent update failed");
+        self.rc_player
+            .borrow_mut()
+            .update(_ctx)
+            .expect("player update failed");
+        self.rc_opponent
+            .borrow_mut()
+            .update(_ctx)
+            .expect("opponent update failed");
 
         self.is_game_end =
             self.rc_player.borrow().score == 3 || self.rc_opponent.borrow().score == 3;
-        
+
         EState::None
     }
 
@@ -788,7 +891,8 @@ impl IState for GameState {
             ctx,
             &Text::new(format!("{}", self.rc_opponent.borrow().score)),
             opponent_score_draw_params,
-        ).expect("draw failed");
+        )
+        .expect("draw failed");
 
         let player_score_draw_params = DrawParam::new()
             .dest(Point2 { x: 640.0, y: 450.0 })
@@ -799,7 +903,8 @@ impl IState for GameState {
             ctx,
             &Text::new(format!("{}", self.rc_player.borrow().score)),
             player_score_draw_params,
-        ).expect("draw failed");
+        )
+        .expect("draw failed");
 
         if self.is_game_end {
             let game_end_draw_params = DrawParam::new()
@@ -808,24 +913,35 @@ impl IState for GameState {
                 .scale([5.0, 5.0])
                 .color(Color::WHITE);
             if self.rc_player.borrow().score == 3 {
-                draw(ctx, &Text::new("You Win!\nPress ESC"), game_end_draw_params).expect("draw failed");
+                draw(ctx, &Text::new("You Win!\nPress ESC"), game_end_draw_params)
+                    .expect("draw failed");
             } else {
                 draw(
                     ctx,
                     &Text::new("Opponent Win!\nPress ESC"),
                     game_end_draw_params,
-                ).expect("draw failed");
+                )
+                .expect("draw failed");
             }
         } else {
             self.rc_player.borrow_mut().draw(ctx).expect("draw failed");
-            self.rc_opponent.borrow_mut().draw(ctx).expect("draw failed");
+            self.rc_opponent
+                .borrow_mut()
+                .draw(ctx)
+                .expect("draw failed");
         }
 
-        // don't have to do this here. it makes flickering. 
+        // don't have to do this here. it makes flickering.
         // present(ctx).expect("draw failed");
     }
 
-    fn key_down_event(&mut self, ctx: &mut Context, keycode: KeyCode, keymods: KeyMods, repeat: bool) {
+    fn key_down_event(
+        &mut self,
+        ctx: &mut Context,
+        keycode: KeyCode,
+        keymods: KeyMods,
+        repeat: bool,
+    ) {
         if ggez::input::keyboard::is_key_pressed(ctx, KeyCode::Escape) {
             ggez::event::quit(ctx);
         }
