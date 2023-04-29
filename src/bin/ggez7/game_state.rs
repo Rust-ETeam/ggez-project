@@ -725,7 +725,7 @@ impl EventHandler for Character {
             self.move_state = 1.0
         }
 
-        if keycode == KeyCode::LShift && self.grab.state == 0.0 {
+        if keycode == KeyCode::LShift {
             self.flash
                 .use_skill(self.rc_gameobject.clone(), self.move_state);
         }
