@@ -10,6 +10,7 @@ use ggez::{Context, ContextBuilder, GameResult};
 use std::cell::RefCell;
 use std::f32::consts::PI;
 use std::rc::Rc;
+use std::time;
 
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
@@ -432,6 +433,9 @@ impl EventHandler for Target {
 struct Flash {
     image: Rc<Image>,
     cooldown_image: Rc<Image>,
+    effect_images: [Rc<Image>; 5],
+    rc_gameobject: Rc<RefCell<GameObject>>,
+    is_player: bool,
     cooltime: f32,
     cooldown: f32,
     distance: f32,
@@ -441,25 +445,61 @@ impl Flash {
     fn new(ctx: &mut Context, image_pool: &mut HashMap<String, Rc<Image>>) -> Flash {
         Flash {
             image: load_image(ctx, String::from("/flash.png"), image_pool),
+            effect_images: [
+                load_image(ctx, String::from("/flash0.png"), image_pool),
+                load_image(ctx, String::from("/flash1.png"), image_pool),
+                load_image(ctx, String::from("/flash2.png"), image_pool),
+                load_image(ctx, String::from("/flash3.png"), image_pool),
+                load_image(ctx, String::from("/flash4.png"), image_pool),
+            ],
             cooldown_image: load_image(ctx, String::from("/cooldown.png"), image_pool),
+            rc_gameobject: Rc::new(RefCell::new(GameObject::new())),
+            is_player: true,
             cooltime: 5.0,
             cooldown: 0.0,
             distance: 200.0,
         }
     }
 
-    fn use_skill(&mut self, rc_gameobject: Rc<RefCell<GameObject>>, direction: f32) {
+    fn use_skill(&mut self, rc_subject: &Rc<RefCell<GameObject>>, direction: f32) {
         if self.cooldown > 0.0 || direction == 0.0 {
             return;
         }
         self.cooldown = self.cooltime;
         {
-            let mut gameobject = rc_gameobject.borrow_mut();
-            let direction = gameobject.transform.right().x * direction;
-            gameobject
-                .transform
-                .move_offset_x(direction * self.distance);
+            let mut subject = rc_subject.borrow_mut();
+            let mut gameobject = self.rc_gameobject.borrow_mut();
+            gameobject.transform.position = subject.transform.position;
+            let direction = subject.transform.right().x * direction;
+            subject.transform.move_offset_x(direction * self.distance);
+
+            gameobject.update_global_transform();
         }
+    }
+}
+
+impl Communication for Flash {
+    fn get_send_data(&self) -> Vec<u8> {
+        let mut data = vec![];
+        let position = self.rc_gameobject.borrow().transform.position;
+        let cd = self.cooldown.to_ne_bytes();
+        let px = position.x.to_ne_bytes();
+        let py = position.y.to_ne_bytes();
+
+        data.extend_from_slice(&cd);
+        data.extend_from_slice(&px);
+        data.extend_from_slice(&py);
+
+        data
+    }
+
+    fn set_recv_data(&mut self, buf: &mut Vec<u8>) {
+        let (data, buf) = buf.split_at(12);
+        let mut gameobject = self.rc_gameobject.borrow_mut();
+        self.cooldown = f32::from_ne_bytes(data[0..4].try_into().unwrap());
+        gameobject.transform.position.x = f32::from_ne_bytes(data[4..8].try_into().unwrap());
+        gameobject.transform.position.y = f32::from_ne_bytes(data[8..12].try_into().unwrap());
+        gameobject.update_global_transform();
     }
 }
 
@@ -472,34 +512,50 @@ impl EventHandler for Flash {
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
-        let text_draw_params = DrawParam::new()
-            .dest(Point2 { x: 50.0, y: 685.0 })
-            .scale([1.4, 1.4])
-            .color(Color::YELLOW);
-        draw(ctx, &Text::new("Shift"), text_draw_params)?;
+        if self.is_player {
+            let text_draw_params = DrawParam::new()
+                .dest(Point2 { x: 50.0, y: 685.0 })
+                .scale([1.4, 1.4])
+                .color(Color::YELLOW);
+            draw(ctx, &Text::new("Shift"), text_draw_params)?;
 
-        let draw_param = DrawParam::new()
-            .dest(Point2 { x: 80.0, y: 640.0 })
-            .offset(Point2 { x: 0.5, y: 0.5 })
-            .scale(Point2 { x: 0.2, y: 0.2 });
-        draw(ctx, self.image.as_ref(), draw_param)?;
+            let draw_param = DrawParam::new()
+                .dest(Point2 { x: 80.0, y: 640.0 })
+                .offset(Point2 { x: 0.5, y: 0.5 })
+                .scale(Point2 { x: 0.2, y: 0.2 });
+            draw(ctx, self.image.as_ref(), draw_param)?;
 
-        if self.cooldown > 0.0 {
-            let cooldown_rect_draw_params = DrawParam::new()
-                .dest(Point2 { x: 80.0, y: 605.0 })
-                .offset(Point2 { x: 0.5, y: 0.0 })
-                .scale([0.32, 0.32])
-                .color(Color::from_rgba(0, 0, 0, 200));
-            draw(ctx, self.cooldown_image.as_ref(), cooldown_rect_draw_params)?;
+            if self.cooldown > 0.0 {
+                // Draw Cooldown
+                let cooldown_rect_draw_params = DrawParam::new()
+                    .dest(Point2 { x: 80.0, y: 605.0 })
+                    .offset(Point2 { x: 0.5, y: 0.0 })
+                    .scale([0.32, 0.32])
+                    .color(Color::from_rgba(0, 0, 0, 200));
+                draw(ctx, self.cooldown_image.as_ref(), cooldown_rect_draw_params)?;
 
-            let cooldown_text_draw_params = DrawParam::new()
-                .dest(Point2 { x: 50.0, y: 620.0 })
-                .scale([2.4, 2.4])
-                .color(Color::WHITE);
+                let cooldown_text_draw_params = DrawParam::new()
+                    .dest(Point2 { x: 50.0, y: 620.0 })
+                    .scale([2.4, 2.4])
+                    .color(Color::WHITE);
+                draw(
+                    ctx,
+                    &Text::new(format!("{:.1}", self.cooldown)),
+                    cooldown_text_draw_params,
+                )?;
+            }
+        }
+
+        // Draw Effect
+        let inverse_cooldown = self.cooltime - self.cooldown;
+        if inverse_cooldown < 0.25 {
+            let effect_draw_params = DrawParam::new()
+                .dest(self.rc_gameobject.borrow().global_transform.position)
+                .offset([0.5, 0.5]);
             draw(
                 ctx,
-                &Text::new(format!("{:.1}", self.cooldown)),
-                cooldown_text_draw_params,
+                self.effect_images[(inverse_cooldown * 20.0) as usize].as_ref(),
+                effect_draw_params,
             )?;
         }
         Ok(())
@@ -543,6 +599,8 @@ impl Character {
                 .borrow_mut()
                 .set_rc_parent(&rc_gameobject);
         }
+
+        let flash = Flash::new(ctx, image_pool);
         Character {
             default_image: load_image(ctx, String::from("/player.png"), image_pool),
             motion_image: load_image(ctx, String::from("/player_grab.png"), image_pool),
@@ -556,7 +614,7 @@ impl Character {
             target,
             grab,
             is_grabbed_by: false,
-            flash: Flash::new(ctx, image_pool),
+            flash,
         }
     }
 
@@ -614,6 +672,7 @@ impl Communication for Character {
 
         data.extend(self.target.get_send_data());
         data.extend(self.grab.get_send_data());
+        data.extend(self.flash.get_send_data());
 
         data
     }
@@ -634,6 +693,10 @@ impl Communication for Character {
         let (data, buf) = buf.split_at(28);
         let mut data = Vec::from(data);
         self.grab.set_recv_data(&mut data);
+
+        let (data, buf) = buf.split_at(12);
+        let mut data = Vec::from(data);
+        self.flash.set_recv_data(&mut data);
     }
 }
 
@@ -674,6 +737,7 @@ impl EventHandler for Character {
         if !self.is_grabbed_by {
             self.target.draw(ctx)?;
             self.grab.draw(ctx)?;
+            self.flash.draw(ctx)?;
         }
         {
             let gameobject = self.rc_gameobject.borrow();
@@ -694,9 +758,6 @@ impl EventHandler for Character {
                 .rotation(rotation)
                 .offset(Point2 { x: 0.5, y: 0.5 });
             draw(ctx, draw_image.as_ref(), draw_param)?;
-        }
-        if !self.is_opponent {
-            self.flash.draw(ctx)?;
         }
         Ok(())
     }
@@ -726,8 +787,7 @@ impl EventHandler for Character {
         }
 
         if keycode == KeyCode::LShift {
-            self.flash
-                .use_skill(self.rc_gameobject.clone(), self.move_state);
+            self.flash.use_skill(&self.rc_gameobject, self.move_state);
         }
     }
 
@@ -751,6 +811,7 @@ pub struct GameState {
     stream: Option<Rc<RefCell<TcpStream>>>,
     is_game_end: bool,
     last_recv: f32,
+    time_start: f32,
 }
 
 impl GameState {
@@ -790,6 +851,14 @@ impl GameState {
                 let mut oppoentobject = opponent.rc_gameobject.borrow_mut();
                 oppoentobject.set_rc_parent(&self.rc_global);
             }
+            opponent.flash.is_player = false;
+            {
+                let mut playerflash = player.flash.rc_gameobject.borrow_mut();
+                playerflash.set_rc_parent(&self.rc_global);
+
+                let mut oppoentflash = opponent.flash.rc_gameobject.borrow_mut();
+                oppoentflash.set_rc_parent(&self.rc_global);
+            }
             player.rebirth(false);
             opponent.rebirth(false);
         }
@@ -814,14 +883,14 @@ impl GameState {
             stream: None,
             is_game_end: false,
             last_recv: 0.0,
+            time_start: ggez::timer::time_since_start(ctx).as_secs_f32(),
         }
     }
 
     fn send_data(&mut self, ctx: &mut Context) {
         let mut data = vec![];
-        let sst = ggez::timer::time_since_start(ctx)
-            .as_secs_f32()
-            .to_ne_bytes();
+        let time_since_start = ggez::timer::time_since_start(ctx).as_secs_f32();
+        let sst = time_since_start.to_ne_bytes();
         data.extend_from_slice(&sst);
         data.extend(self.rc_player.borrow_mut().get_send_data()); // 24 bytes
         if let Some(st) = &self.stream {
@@ -832,7 +901,7 @@ impl GameState {
     }
 
     fn recv_data(&mut self) {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 76];
         if let Some(st) = &self.stream {
             let mut _st = st.try_borrow_mut().unwrap();
 
@@ -913,12 +982,16 @@ impl IState for GameState {
                 .scale([5.0, 5.0])
                 .color(Color::WHITE);
             if self.rc_player.borrow().score == 3 {
-                draw(ctx, &Text::new("You Win!\nPress ESC"), game_end_draw_params)
-                    .expect("draw failed");
+                draw(
+                    ctx,
+                    &Text::new("You Win!\nPress ESC to Exit"),
+                    game_end_draw_params,
+                )
+                .expect("draw failed");
             } else {
                 draw(
                     ctx,
-                    &Text::new("Opponent Win!\nPress ESC"),
+                    &Text::new("Opponent Win!\nPress ESC to Exit"),
                     game_end_draw_params,
                 )
                 .expect("draw failed");
